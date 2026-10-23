@@ -1,0 +1,39 @@
+# 5 分钟部署指南
+
+## 需要准备
+
+一台有 Docker 的 Linux 服务器、一个解析到该服务器的域名，以及能正常联网的服务器网络。服务器的 80 和 443 端口不能被其他服务占用。
+
+## 启动
+
+```bash
+unzip 404-ai-channel-tester-v1.1.zip
+cd 404-ai-channel-tester
+cp .env.example .env
+nano .env
+```
+
+修改 `.env` 中两个参数：
+
+- `TESTER_DOMAIN`：实际域名，例如 `tester.yourdomain.com`
+- `ADMIN_PASSWORD`：自己设置的强密码，至少 12 位，不要保留示例值
+
+再执行：
+
+```bash
+docker compose up -d --build
+```
+
+浏览器打开 `https://你的域名`，输入刚配置的管理员密码。
+
+## 日常怎么测试
+
+输入 API 地址、API Key、模型 ID，选择“标准检测”，点击开始。一般无须打开高级设置。分组不通用，默认只做标签记录；要测不同分组，使用供应商指定的独立 Key 或高级自定义 Header。
+
+如果你已有 Nginx/Caddy 占用 80/443，需要把本项目 `app` 服务挂到原有 HTTPS 反向代理后，不能同时运行两个监听相同端口的代理。
+
+## 关键提示
+
+本软件为供自己使用的渠道初筛工具。首次发布已做模拟接口测试，尚未用你的真实供应商 Key 验证。**不保存 API Key，但服务器仍会把 Key 发往你填写的待测 API。** 使用独立的低额度 Key，禁止把密钥和商业报价填到公共第三方网站。
+
+遇到问题可以查看完整 `README.md`。

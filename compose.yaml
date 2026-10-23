@@ -1,0 +1,32 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set strong ADMIN_PASSWORD in .env}
+      COOKIE_SECURE: "1"
+      DB_PATH: /data/tester.db
+      ALLOWED_API_HOSTS: ${ALLOWED_API_HOSTS:-}
+    volumes:
+      - reports:/data
+    networks: [internal]
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      TESTER_DOMAIN: ${TESTER_DOMAIN:?Set your domain in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [internal]
+    depends_on: [app]
+networks:
+  internal:
+volumes:
+  reports:
+  caddy_data:
+  caddy_config:
