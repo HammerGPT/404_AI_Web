@@ -1,0 +1,183 @@
+{
+  "id": "ai404-fingerprint-v1",
+  "token_rounds": 3,
+  "behavior_repeats": 12,
+  "capability_repeats": 2,
+  "token_output_limit": 64,
+  "behavior_output_limit": 128,
+  "capability_output_limit": 800,
+  "minimum_behavior_samples": 10,
+  "permutations": 999,
+  "alpha": 0.01,
+  "max_reference_age_days": 30,
+  "token_probes": [
+    {
+      "id": "anchor",
+      "title": "短文本基准",
+      "prompt": "a"
+    },
+    {
+      "id": "english",
+      "title": "英文词元",
+      "prompt": "An observatory measures distant stars while a quiet library preserves maps, poems, and scientific notes. Clear language connects careful experiments with practical questions."
+    },
+    {
+      "id": "chinese",
+      "title": "中文词元",
+      "prompt": "清晨的图书馆保存着地图、诗歌和实验记录。研究者比较不同语言的词元切分、数字表达与标点习惯，并检查相同文本在重复请求中的计数是否一致。"
+    },
+    {
+      "id": "code",
+      "title": "代码词元",
+      "prompt": "def merge_counts(items):\n    result = {}\n    for name, count in items:\n        result[name] = result.get(name, 0) + count\n    return sorted(result.items())\n"
+    },
+    {
+      "id": "unicode",
+      "title": "Unicode 词元",
+      "prompt": "文本组合：café naïve résumé | 中文 日本語 한국어 | 🧪 🔭 👩🏽‍💻 🚀 | αβγ ∑ √ ≠ → 𠮷"
+    }
+  ],
+  "behavior_probes": [
+    {
+      "id": "digit_en",
+      "title": "数字偏好·英文",
+      "prompt": "Choose one digit from 0 to 9 intuitively. Reply with that single digit only.",
+      "answers": [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9"
+      ]
+    },
+    {
+      "id": "digit_zh",
+      "title": "数字偏好·中文",
+      "prompt": "凭直觉选一个 0 到 9 的数字。只回复这一位数字，不要解释。",
+      "answers": [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9"
+      ]
+    },
+    {
+      "id": "color_en",
+      "title": "颜色偏好·英文",
+      "prompt": "Choose one color intuitively from red, blue, green, yellow, black, white. Reply with only its lowercase English name.",
+      "answers": [
+        "red",
+        "blue",
+        "green",
+        "yellow",
+        "black",
+        "white"
+      ]
+    },
+    {
+      "id": "color_zh",
+      "title": "颜色偏好·中文",
+      "prompt": "凭直觉从红、蓝、绿、黄、黑、白中选一种颜色。只回复一个汉字。",
+      "answers": [
+        "红",
+        "蓝",
+        "绿",
+        "黄",
+        "黑",
+        "白"
+      ]
+    },
+    {
+      "id": "shape",
+      "title": "形状偏好",
+      "prompt": "Choose one shape intuitively: circle, square, triangle, star, hexagon. Reply with only the lowercase word.",
+      "answers": [
+        "circle",
+        "square",
+        "triangle",
+        "star",
+        "hexagon"
+      ]
+    },
+    {
+      "id": "coin",
+      "title": "二元选择偏好",
+      "prompt": "Imagine a coin toss and choose heads or tails. Reply with only the lowercase word.",
+      "answers": [
+        "heads",
+        "tails"
+      ]
+    }
+  ],
+  "capability_probes": [
+    {
+      "id": "arithmetic",
+      "title": "多步计算",
+      "prompt": "计算 (37 × 19 - 58) ÷ 5。只输出结果数字，不要解释。",
+      "expected": 129
+    },
+    {
+      "id": "trace",
+      "title": "代码执行推断",
+      "prompt": "推断下列 Python 代码输出。只回复等价的 JSON 数组，不要代码块或解释。\na = []\nfor n in range(1, 7):\n    if n % 2 == 0:\n        a.insert(0, n * 3)\n    else:\n        a.append(n - 1)\nprint(a)\n",
+      "expected": [
+        18,
+        12,
+        6,
+        0,
+        2,
+        4
+      ]
+    },
+    {
+      "id": "order",
+      "title": "约束排序",
+      "prompt": "A、B、C、D 各出现一次。D 在 A 前面，A 在 C 前面，C 在 B 前面。输出从前到后的 JSON 数组，不要解释。",
+      "expected": [
+        "D",
+        "A",
+        "C",
+        "B"
+      ]
+    },
+    {
+      "id": "filter",
+      "title": "结构化筛选",
+      "prompt": "从 [{\"id\":\"a\",\"n\":4},{\"id\":\"b\",\"n\":7},{\"id\":\"c\",\"n\":2},{\"id\":\"d\",\"n\":9}] 中保留 n 为奇数的项，按 n 降序输出 id。只回复 JSON 数组。",
+      "expected": [
+        "d",
+        "b"
+      ]
+    },
+    {
+      "id": "unicode",
+      "title": "文本精确提取",
+      "prompt": "只根据文本「编号甲=星河🌟；编号乙=山川；编号丙=晴空」提取甲和丙。只输出 JSON 对象，键为 a 和 c，值保持原文。",
+      "expected": {
+        "a": "星河🌟",
+        "c": "晴空"
+      }
+    },
+    {
+      "id": "records",
+      "title": "多记录信息提取",
+      "prompt": "以下是固定记录。只输出 JSON 对象，键为 first 和 last，分别取记录 R017 和 R053 的 value，不要解释。\nR001: value=20\nR002: value=37\nR003: value=54\nR004: value=71\nR005: value=88\nR006: value=4\nR007: value=21\nR008: value=38\nR009: value=55\nR010: value=72\nR011: value=89\nR012: value=5\nR013: value=22\nR014: value=39\nR015: value=56\nR016: value=73\nR017: value=90\nR018: value=6\nR019: value=23\nR020: value=40\nR021: value=57\nR022: value=74\nR023: value=91\nR024: value=7\nR025: value=24\nR026: value=41\nR027: value=58\nR028: value=75\nR029: value=92\nR030: value=8\nR031: value=25\nR032: value=42\nR033: value=59\nR034: value=76\nR035: value=93\nR036: value=9\nR037: value=26\nR038: value=43\nR039: value=60\nR040: value=77\nR041: value=94\nR042: value=10\nR043: value=27\nR044: value=44\nR045: value=61\nR046: value=78\nR047: value=95\nR048: value=11\nR049: value=28\nR050: value=45\nR051: value=62\nR052: value=79\nR053: value=96\nR054: value=12\nR055: value=29\nR056: value=46\nR057: value=63\nR058: value=80\nR059: value=97\nR060: value=13\nR061: value=30\nR062: value=47\nR063: value=64\nR064: value=81",
+      "expected": {
+        "first": 90,
+        "last": 96
+      }
+    }
+  ],
+  "minimum_reference_capabilities": 4
+}

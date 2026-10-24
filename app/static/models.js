@@ -32,6 +32,7 @@ function selectModel(modelId) {
   $('protocol').value = 'auto';
   refreshSelection();
   syncReasoning(modelId,selectedProtocol(),true);
+  window.dispatchEvent(new Event('model-selection-changed'));
 }
 function icon(brand) {
   return `<img src="/static/assets/models/${esc(brand)}.svg" alt="" width="20" height="20">`;
@@ -86,7 +87,7 @@ export function setupModels() {
   $('modelSearch').addEventListener('input',renderChoices);
   $('modelOptions').addEventListener('click',e => {const b=e.target.closest('[data-select-model]');if(b)selectModel(b.dataset.selectModel);});
   $('model').addEventListener('change',() => {if(catalog)selectModel($('model').value.trim());});
-  $('protocol').addEventListener('change',()=>{updateProtocolNote();syncReasoning($('model').value.trim(),selectedProtocol(),true);});
+  $('protocol').addEventListener('change',()=>{updateProtocolNote();syncReasoning($('model').value.trim(),selectedProtocol(),true);window.dispatchEvent(new Event('model-selection-changed'));});
   $('newPreset').addEventListener('click',() => editPreset());
   $('cancelPreset').addEventListener('click',() => show($('presetEditor'),false));
   $('presetRows').addEventListener('click',async e => {

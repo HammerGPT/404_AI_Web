@@ -29,9 +29,9 @@ export function syncReasoning(modelId,protocol,reset=false){
   updateReasoningMode();
 }
 function updateReasoningMode(){
-  const quick=document.querySelector('input[name="mode"]:checked').value==='quick';
-  $('reasoning').disabled=quick;
-  $('reasoningScope').textContent=quick?'快速档不含思考专项':'仅用于思考专项';
+  const mode=document.querySelector('input[name="mode"]:checked').value;
+  $('reasoning').disabled=!['standard','deep'].includes(mode);
+  $('reasoningScope').textContent=mode==='fingerprint'?'指纹使用固定对照配置':mode==='quick'?'快速档不含思考专项':'仅用于思考专项';
 }
 export function basicPayload(){
   const raw=$('groupRatio').value.trim();const value=Number(raw);

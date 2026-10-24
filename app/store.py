@@ -18,6 +18,9 @@ def init():
         cx.execute('CREATE TABLE IF NOT EXISTS run_requests (request_id TEXT PRIMARY KEY, report_id TEXT UNIQUE NOT NULL)')
         cx.execute('CREATE TABLE IF NOT EXISTS model_presets (id TEXT PRIMARY KEY, name TEXT NOT NULL, model_id TEXT UNIQUE NOT NULL, brand TEXT NOT NULL, protocol TEXT NOT NULL, enabled INTEGER NOT NULL, sort_order INTEGER NOT NULL)')
         cx.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+        cx.execute('''CREATE TABLE IF NOT EXISTS fingerprint_baselines (
+                      id TEXT PRIMARY KEY, name TEXT NOT NULL, model TEXT NOT NULL, protocol TEXT NOT NULL,
+                      created_at TEXT NOT NULL, report_id TEXT UNIQUE NOT NULL, enabled INTEGER NOT NULL, payload TEXT NOT NULL)''')
         cx.execute('CREATE TABLE IF NOT EXISTS model_reasoning (preset_id TEXT PRIMARY KEY, model_id TEXT NOT NULL, protocol TEXT NOT NULL, options TEXT NOT NULL, default_value TEXT NOT NULL)')
         presets = json.loads((Path(__file__).parent/'data/model-presets.json').read_text())
         if not cx.execute("SELECT 1 FROM settings WHERE key='model_presets_seeded'").fetchone():
@@ -35,8 +38,11 @@ def init():
         cx.execute("INSERT OR IGNORE INTO settings VALUES ('billing',?)",(billing,))
 
 
-def save(r: dict, request_id: str | None = None):
+def save(r: dict, request_id: str | None = None, baseline: dict | None = None):
     with LOCK, sqlite3.connect(DB) as cx:
+        if baseline:
+            cx.execute('INSERT OR IGNORE INTO fingerprint_baselines VALUES (?,?,?,?,?,?,?,?)',
+                       (baseline['id'],baseline['name'],baseline['model'],baseline['protocol'],baseline['created_at'],baseline['report_id'],1,json.dumps(baseline,ensure_ascii=False)))
         cx.execute('''INSERT INTO reports (id,created_at,model,label,mode,protocol,status,payload)
                       VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
                       status=excluded.status,payload=excluded.payload''', (
@@ -62,6 +68,24 @@ def get(report_id: str):
     with LOCK, sqlite3.connect(DB) as cx:
         row = cx.execute('SELECT payload FROM reports WHERE id=?', (report_id,)).fetchone()
         return json.loads(row[0]) if row else None
+
+
+def list_fingerprint_baselines():
+    with LOCK,sqlite3.connect(DB) as db:
+        rows=db.execute('SELECT payload,enabled FROM fingerprint_baselines ORDER BY created_at DESC LIMIT 100').fetchall()
+        return [{**json.loads(row[0]),'enabled':bool(row[1])} for row in rows]
+
+
+def get_fingerprint_baseline(reference_id):
+    with LOCK,sqlite3.connect(DB) as db:
+        row=db.execute('SELECT payload,enabled FROM fingerprint_baselines WHERE id=?',(reference_id,)).fetchone()
+        return {**json.loads(row[0]),'enabled':bool(row[1])} if row else None
+
+
+def set_fingerprint_baseline_enabled(reference_id,enabled):
+    with LOCK,sqlite3.connect(DB) as db:
+        if db.execute('UPDATE fingerprint_baselines SET enabled=? WHERE id=?',(enabled,reference_id)).rowcount!=1:
+            raise KeyError(reference_id)
 
 
 def by_request(request_id: str):

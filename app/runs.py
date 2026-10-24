@@ -4,7 +4,9 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 from . import store
-from .engine import make_report, run_suite, resolve_protocol
+from .engine import make_report, run_suite, resolve_protocol, redact
+from . import fingerprints
+from urllib.parse import urlsplit
 
 
 class BusyError(Exception):
@@ -39,6 +41,21 @@ class RunManager:
             cfg['billing_multiplier']=multiplier
             if cfg.get('rates'):
                 cfg['rates']={**cfg['rates'],'group_ratio':multiplier}
+            if cfg['mode']=='fingerprint':
+                if cfg.get('fingerprint_action','verify')=='reference':
+                    if not cfg.get('fingerprint_trusted') or not cfg.get('fingerprint_name','').strip():
+                        raise ValueError('建立基线需填写名称并确认这是你认可的独立可信参考来源。')
+                    if cfg.get('fingerprint_source')=='official':
+                        address=urlsplit(cfg['base_url'])
+                        if address.hostname not in fingerprints.OFFICIAL_HOSTS or address.port not in (None,443):
+                            raise ValueError('该地址不是当前识别的官方直连域名；云平台或其他可信来源请选择用户确认可信渠道。')
+                else:
+                    reference=store.get_fingerprint_baseline(cfg.get('fingerprint_reference',''))
+                    if not reference or not reference['enabled']:raise ValueError('请先选择已建立并启用的可信指纹基线。')
+                    if cfg['protocol']=='openai_chat' and cfg.get('token_field','auto')=='auto':
+                        cfg['token_field']=reference['conditions']['token_field']
+                    fingerprints.validate_reference(reference,cfg)
+                    cfg['_fingerprint_reference']=reference
             report_id = uuid.uuid4().hex[:14]
             created_at = datetime.now(timezone.utc).isoformat()
             report = make_report(cfg,[],report_id,created_at)
@@ -52,7 +69,13 @@ class RunManager:
         async def update(report):
             nonlocal snapshot
             report['revision'] = snapshot['revision'] + 1
-            store.save(report)
+            baseline=None
+            if report.get('run_state')=='completed' and cfg.get('fingerprint_action')=='reference' and cfg['mode']=='fingerprint':
+                baseline=fingerprints.baseline_document(cfg,report)
+                if baseline:
+                    baseline=redact(baseline,[cfg['key'],*cfg.get('custom_headers',{}).values()])
+                    report['fingerprint']['created_baseline']={k:baseline[k] for k in ('id','name','model')}
+            store.save(report,baseline=baseline)
             snapshot = report
         try:
             result = await run_suite(cfg,update,report_id=snapshot['id'],created_at=snapshot['created_at'])

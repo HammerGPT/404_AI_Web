@@ -107,7 +107,7 @@ def test_run_api_sse_reconnect_does_not_repeat_upstream(monkeypatch):
             if report['run_state']=='completed':break
             time.sleep(.01)
         assert report['run_state']=='completed' and len(calls)==4
-        assert report['stats']['counts']['sample']==1
+        assert report['stats']['counts']['sample']==0
         for _ in range(2):
             events=client.get('/api/runs/'+report_id+'/events')
             assert events.status_code==200 and 'event: snapshot' in events.text

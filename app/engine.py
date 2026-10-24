@@ -10,21 +10,22 @@ from datetime import datetime, timezone
 import httpx
 from .adapters import TOOL, TEXT_LIMIT, StreamResult, build_payload, normalize_usage, parse_result
 from .catalog import infer_protocol
+from . import fingerprints
 from .security import api_path, pinned_request, pinned_stream, TargetError
 
 CASES = [
     ('connect', '连接与协议', '请仅输出 PING，不要附加其他文字。', 80),
-    ('fingerprint', '行为采样', '在 0 到 9 之间任选一个数字。只输出这个数字。', 40),
+    ('digit_format', '单字符约束', '在 0 到 9 之间任选一个数字。只输出这个数字。', 40),
     ('json', '结构化输出', '只输出一个合法 JSON 对象，且 code 必须为 OK，count 必须为 3。', 120),
     ('stream', '流式性能', '请用一句短话解释为何蓝天看起来是蓝色。', 140),
     ('tool', '工具调用', '请调用 convert_length 工具，将 12 厘米转换为毫米，不要自行计算。', 160),
-    ('reasoning', '思考协议', '先分析后回答：小明有 3 个盒子，每盒 4 支笔，送出 5 支后剩几支？仅给简短答案。', 180),
+    ('reasoning', '算术推理与思考响应', '先分析后回答：小明有 3 个盒子，每盒 4 支笔，送出 5 支后剩几支？仅给简短答案。', 180),
     ('instruction', '指令遵循', '只能输出三行文本：第一行 RED，第二行 GREEN，第三行 BLUE。不要其他内容。', 90),
     ('logic', '基础推理', '已知所有鲸鱼都是哺乳动物，有些哺乳动物生活在陆地上。能否推出有些鲸鱼生活在陆地上？只回答 能 或 不能。', 100),
-    ('fingerprint2', '行为复测 A', '任选一个 0-9 的整数，只返回数字。', 50),
-    ('fingerprint3', '行为复测 B', '随机想一个一位数整数，只输出数字。', 50),
-    ('fingerprint4', '行为复测 C', '请选择 0 至 9 中的一个数字回答。', 50),
-    ('fingerprint5', '行为复测 D', '只回答一个你最先想到的数字（0-9）。', 50),
+    ('exact_word', '精确文本约束', '只输出单词 READY，不要其他内容。', 50),
+    ('arithmetic', '多步计算', '计算 (37 × 19 - 58) ÷ 5。只输出结果数字。', 80),
+    ('array_order', '数组排序', '将 [8,3,5,1] 按从小到大排序，只输出 JSON 数组。', 80),
+    ('extract_value', '字段提取', '从 {"alpha":17,"beta":29} 中提取 beta 的值，只输出数字。', 50),
     ('stream2', '流式复测', '请简短说明为什么铁会生锈。', 140),
     ('json2', 'JSON 复测', '严格输出 JSON：{"valid":true,"items":[1,2,3]}，不可输出 Markdown。', 110),
     ('tool2', '工具调用复测', '调用 convert_length 工具，换算 25 厘米到毫米。', 160),
@@ -34,6 +35,7 @@ DISTILL = ('structured_sample', '授权数据生成样例', '生成一条关于�
 
 
 def cases_for(mode: str, distill: bool = False):
+    if mode=='fingerprint':return fingerprints.cases()
     n = {'quick': 4, 'standard': 8, 'deep': 16}[mode]
     cases = CASES[:n]
     return cases + ([DISTILL] if distill and mode != 'quick' else [])
@@ -43,11 +45,15 @@ EXPECTED_TOOLS = {'tool': {'centimeters': 12}, 'tool2': {'centimeters': 25}}
 EXPECTED_JSON = {'json': {'code': 'OK', 'count': 3}, 'json2': {'valid': True, 'items': [1, 2, 3]}}
 RULES = {
     'connect': '完整响应，正文严格等于 PING。',
-    'fingerprint': '记录数字选择样本，不以此判定模型身份。',
+    'digit_format': '仅输出 0～9 中的一个数字，验证格式约束，不认证模型身份。',
+    'exact_word': '正文严格等于 READY。',
+    'arithmetic': '结果应为 129。',
+    'array_order': '正文应为 JSON 数组 [1,3,5,8]。',
+    'extract_value': '正文应为 29。',
     'json': '正文可直接解析为 JSON，字段及值符合要求。',
     'stream': '收到正文、协议结束标记及可解析事件；另外记录 Usage 是否完整。',
     'tool': '仅调用指定函数，函数名及参数与题目要求一致；不实际执行工具。',
-    'reasoning': '记录接口公开返回的推理文本/摘要或推理用量；不据此认证模型身份。',
+    'reasoning': '计算答案应为 7 支笔；公开推理字段另行记录，不能据此认证模型身份。',
     'instruction': '仅输出 RED、GREEN、BLUE 三行。',
     'logic': '严格回答“不能”。',
     'logic2': '严格回答“甲”。',
@@ -59,6 +65,7 @@ CASE_TIMEOUT_SECONDS = 90
 
 def case_spec(case):
     kind, title, prompt, _ = case
+    if kind in fingerprints.BY_KIND:return fingerprints.specification(kind)
     family = kind.rstrip('0123456789')
     return {'kind': kind, 'title': title, 'prompt': prompt,
             'expected': RULES.get(kind, RULES.get(family, '记录实际响应。')),
@@ -98,8 +105,18 @@ def check_assertion(kind: str, text: str, tool=False) -> tuple[str,str]:
     value = text.strip()
     if kind == 'connect':
         return ('pass' if value == 'PING' else 'warn', '正文与 PING 严格匹配' if value == 'PING' else '正文不等于要求的 PING')
-    if kind.startswith('fingerprint') or kind == 'reasoning':
-        return 'sample', RULES['reasoning' if kind == 'reasoning' else 'fingerprint']
+    if kind=='digit_format':
+        ok=len(value)==1 and value in '0123456789'
+        return ('pass' if ok else 'warn','符合单字符格式要求；不代表模型身份验证。' if ok else '未按要求只输出一位数字。')
+    if kind=='reasoning':
+        normalized=value.strip('。.!！').replace(' ','')
+        ok=normalized in ('7','7支','7支笔','剩7支笔','剩下7支笔','还剩7支笔','七','七支笔')
+        return ('pass' if ok else 'warn','答案为 7，计算检查通过；公开推理证据见明细。' if ok else '预期为 7 支笔，实际答案或格式未符合要求。')
+    if kind in ('exact_word','arithmetic','array_order','extract_value'):
+        expected={'exact_word':'READY','arithmetic':'129','array_order':[1,3,5,8],'extract_value':'29'}[kind]
+        try:ok=json.loads(value)==expected if kind=='array_order' else value==expected
+        except ValueError:ok=False
+        return ('pass' if ok else 'warn','响应符合预期。' if ok else '响应与确定答案不一致。')
     if kind.startswith('stream'):
         return ('pass' if value else 'warn', '正文输出检查')
     if kind in EXPECTED_TOOLS:
@@ -120,7 +137,7 @@ def check_assertion(kind: str, text: str, tool=False) -> tuple[str,str]:
         except (ValueError,TypeError):
             return 'warn', '正文不是可直接解析的 JSON'
     else:
-        return 'sample', '已记录样本'
+        return 'warn', '该检查尚无可执行判定规则，未标记为通过。'
     return ('pass' if ok else 'warn', '响应符合预期' if ok else '响应与指定内容或字段要求不一致')
 
 
@@ -183,10 +200,10 @@ async def run_one(cfg: dict, protocol: str, case: tuple) -> dict:
                 item['note'] = f'HTTP {response.status_code}（请求失败，请检查接口配置）'
             else:
                 item.update(parse_result(clean(json.loads(raw)),protocol,kind))
-                item['status'],item['note'] = check_assertion(kind,item['text'],item['tool_calls'])
+                item['status'],item['note'] = fingerprints.grade(kind,item) if kind in fingerprints.BY_KIND else check_assertion(kind,item['text'],item['tool_calls'])
                 for call in item['tool_calls']:
                     call['arguments'] = redact(call['arguments'],secrets,keys=True)
-        if item.get('finish_reason') in ('length','max_tokens','MAX_TOKENS','incomplete') and item['status'] != 'error':
+        if item.get('finish_reason') in ('length','max_tokens','MAX_TOKENS','incomplete') and item['status'] != 'error' and not kind.startswith('fp_token_'):
             item['status'] = 'warn'
             item['note'] += '；达到输出上限，内容可能不完整'
     except (httpx.HTTPError,TargetError,asyncio.TimeoutError) as error:
@@ -271,6 +288,9 @@ def make_report(cfg, samples, report_id, created_at, state='running', current_ca
                              '小样本性能不代表长期 SLA；未记录的字段显示为未知。']}
     if state != 'running':
         report['finished_at'] = datetime.now(timezone.utc).isoformat()
+    if cfg['mode']=='fingerprint':
+        report['fingerprint']=fingerprints.analyze(cfg,samples,state)
+        if report['fingerprint']['status'] in ('fail','unknown') and state!='running':report['status']='attention'
     return redact(report,[cfg['key'], *cfg.get('custom_headers',{}).values()])
 
 
@@ -295,4 +315,11 @@ async def run_suite(cfg: dict, update=None, report_id=None, created_at=None) -> 
         if len(samples)==1 and result.get('http_status') in (401,403):
             stop_reason = '首项鉴权失败，剩余项目未执行。'
             break
+        if cfg['mode']=='fingerprint':
+            if result.get('http_status') in (401,403,404,429):
+                stop_reason='鉴权、接口或限流错误，已停止剩余指纹请求，未自动重试。';break
+            def unusable(item):
+                return item['status']=='error' or (item.get('fingerprint_group')=='token' and item.get('fingerprint_measurement',{}).get('value') is None)
+            if len(samples)>=3 and all(unusable(s) for s in samples[-3:]):
+                stop_reason='连续三个请求无法提供有效测量，已停止剩余指纹请求。';break
     return make_report(cfg,samples,report_id,created_at,state='completed',elapsed_ms=(time.perf_counter()-start)*1000,stop_reason=stop_reason)

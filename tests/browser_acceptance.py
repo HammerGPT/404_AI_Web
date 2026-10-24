@@ -93,7 +93,7 @@ async def main():
         calls=await (await context.request.get('http://127.0.0.1:8000/__test__/calls')).json()
         assert calls['count']==8, calls
         report=await (await context.request.get('http://127.0.0.1:8000/api/reports/'+report_id)).json()
-        assert report['stats']['counts']=={'pass':6,'warn':0,'error':0,'sample':2},report['stats']['counts']
+        assert report['stats']['counts']=={'pass':8,'warn':0,'error':0,'sample':0},report['stats']['counts']
         assert report['stats']['ttft_samples']==1 and report['stats']['tps_samples']==8
         assert report['settings']['billing_multiplier']==2.5 and report['stats']['estimated_cost_usd'] is None
         assert report['settings']['reasoning']=='high'

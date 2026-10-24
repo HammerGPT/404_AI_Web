@@ -1,0 +1,20 @@
+{% set fp = report.fingerprint %}
+<section class="fingerprint-result {{ 'fingerprint-failed' if fp.status == 'fail' else '' }}" aria-label="指纹核验结论">
+  <h3>{{ fp.title }}</h3>{% if not fp.checks %}<p>{{ fp.detail or '测量进行中。各条记录只判断请求与格式；整体指纹结论在完成后生成。' }}</p>{% endif %}
+  {% if fp.reference %}<p class="fingerprint-provenance">参考：{{ fp.reference.name }} · {{ fp.reference.model }} · {{ fp.reference.source_host }} · {{ '官方域名直连采集' if fp.reference.source_kind=='official' else '用户确认可信来源' }}<br>采集时间：{{ fp.reference.created_at }} · 方法：{{ fp.method }}</p>{% endif %}
+  {% if fp.reference_measurement %}<p class="fingerprint-provenance">参考回传标识：{{ fp.reference_measurement.returned_models|join('，') or '未提供' }}</p>{% endif %}
+  {% if fp.created_baseline %}<p class="fingerprint-provenance">已保存基线：{{ fp.created_baseline.name }}（{{ fp.created_baseline.id }}）。可在模型配置页管理，随后选择它核验待测渠道。</p>{% endif %}
+  {% if fp.checks %}<div class="fingerprint-checks">{% for check in fp.checks %}<div><strong>{{ check.name }}</strong><span class="status-pill {{ 'error' if check.status=='fail' else check.status }}">{{ '失败' if check.status=='fail' else '通过' if check.status=='pass' else '未验证' }}</span><p>{{ check.detail }}</p>{% if check.statistics %}<small>差异统计量 {{ check.statistics.effect }} · p={{ check.statistics.p_value }} · 阈值 {{ check.statistics.alpha }}。p 不是模型真实概率。</small>{% endif %}{% if check.expected %}<details class="fingerprint-counts" data-detail-key="{{ report.data.id }}-token-counts" {% if not interactive %}open{% endif %}><summary>查看差分计数</summary><small>参考：{{ check.expected }}<br>本次各轮：{{ check.observed }}</small></details>{% endif %}</div>{% endfor %}</div>{% endif %}
+  {% if fp.same_source %}<p class="report-notice">参考和待测来自同一主机，仅能比较相对历史；不能独立证明该来源的模型身份。</p>{% endif %}
+  {% if report.fingerprint_comparisons and fp.reference %}<details class="fingerprint-comparison" data-detail-key="{{ report.data.id }}-comparison" {% if not interactive %}open{% endif %}><summary>分布与能力对照数据</summary><div class="fp-table-scroll"><table><thead><tr><th>探针</th><th>参考</th><th>本次</th><th>有效 / 无效</th></tr></thead><tbody>{% for row in report.fingerprint_comparisons %}<tr><td>{{ row.name }}</td><td>{{ row.reference }}</td><td>{{ row.observed }}</td><td>{{ row.valid }} / {{ row.invalid }}</td></tr>{% endfor %}</tbody></table></div></details>{% endif %}
+  <details class="report-limits" {% if not interactive %}open{% endif %}><summary>检测条件与适用范围</summary><p>使用同协议、固定题目和输出上限；采样参数保持上游默认，无法独立确认上游是否改写。</p><ul>{% for limit in fp.limits %}<li>{{ limit }}</li>{% endfor %}</ul></details>
+</section>
+<section class="fingerprint-evidence" aria-label="指纹测量记录"><h3>逐组记录 <small>单条“通过”表示该请求或回答格式符合要求，整体判断以上方核验结论为准。</small></h3>
+{% for group in report.fingerprint_groups %}<details class="evidence-case" id="{{ group.anchor }}" data-case-status="{{ group.status }}" {% if not interactive %}open{% endif %}>
+  <summary><strong>{{ group.title }}</strong><span>{{ group.completed }}/{{ group.total }} 次完成</span><span>{{ group.failures }} 次未通过</span><span class="case-chevron" aria-hidden="true"></span></summary>
+  <div class="evidence-body"><div class="evidence-grid"><section><h4>固定探针</h4><pre>{{ group.prompt }}</pre></section><section><h4>规则</h4><pre>{{ group.expected }}</pre></section></div>
+    <div class="fp-table-scroll"><table><thead><tr><th>轮次</th><th>请求/格式校验</th><th>{{ '输入 Token' if group.group=='token' else '实际响应' }}</th><th>耗时</th><th>说明</th></tr></thead><tbody>
+    {% for trial in group.trials %}<tr><td>{{ trial.repeat }}</td><td>{{ trial.status_label }}</td><td>{% if group.group=='token' %}{{ trial.fingerprint_measurement.value if trial.fingerprint_measurement is defined and trial.fingerprint_measurement.value is not none else '—' }}{% else %}{{ trial.text or '—' }}{% endif %}</td><td>{{ duration(trial.latency_ms) if trial.latency_ms is defined else '—' }}</td><td>{{ trial.note }}</td></tr>{% endfor %}
+    </tbody></table></div>
+  </div>
+</details>{% endfor %}</section>

@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
-from . import store, auth
+from . import store, auth, fingerprints
 from .catalog import PROTOCOLS, BRANDS, REASONING_LABELS, metadata, validate_reasoning_profile
 from .reports import render_report, pdf_renderer
 from .runs import manager, BusyError
@@ -210,6 +210,23 @@ class Config(BaseModel):
     custom_headers: dict[str,str] = Field(default_factory=dict)
     rates: dict[str,float] | None = None
     billing_multiplier: float | None = Field(default=None,ge=0,le=1000000,allow_inf_nan=False)
+    fingerprint_action: str = 'verify'
+    fingerprint_reference: str = Field(default='',max_length=100)
+    fingerprint_name: str = Field(default='',max_length=100)
+    fingerprint_source: str = 'trusted'
+    fingerprint_trusted: bool = False
+
+    @field_validator('fingerprint_action')
+    @classmethod
+    def check_fingerprint_action(cls,value):
+        if value not in ('verify','reference'):raise ValueError('无效指纹操作')
+        return value
+
+    @field_validator('fingerprint_source')
+    @classmethod
+    def check_fingerprint_source(cls,value):
+        if value not in ('official','trusted'):raise ValueError('无效参考来源')
+        return value
 
     @field_validator('base_url')
     @classmethod
@@ -219,7 +236,7 @@ class Config(BaseModel):
     @field_validator('mode')
     @classmethod
     def check_mode(cls,v):
-        if v not in ('quick','standard','deep'): raise ValueError('无效测试模式')
+        if v not in ('quick','standard','deep','fingerprint'): raise ValueError('无效测试模式')
         return v
 
     @field_validator('protocol')
@@ -339,6 +356,31 @@ async def model_catalog(session=Depends(get_session)):
     return {**metadata(),'models':store.list_models(),'billing':store.billing_settings()}
 
 
+@app.get('/api/fingerprints')
+async def fingerprint_catalog(session=Depends(get_session)):
+    fields=('id','name','model','protocol','source_host','source_kind','created_at','report_id','enabled')
+    references=[{k:r[k] for k in fields} for r in store.list_fingerprint_baselines()]
+    return {**fingerprints.catalog(),'references':references}
+
+
+@app.get('/api/fingerprints/{reference_id}')
+async def fingerprint_reference(reference_id:str,session=Depends(get_session)):
+    reference=store.get_fingerprint_baseline(reference_id)
+    if not reference:raise HTTPException(404,'参考指纹不存在')
+    return reference
+
+
+class ReferenceEnabled(BaseModel):
+    enabled: bool
+
+
+@app.put('/api/fingerprints/{reference_id}')
+async def fingerprint_enabled(reference_id:str,cfg:ReferenceEnabled,session=Depends(require_csrf)):
+    try:store.set_fingerprint_baseline_enabled(reference_id,cfg.enabled)
+    except KeyError:raise HTTPException(404,'参考指纹不存在') from None
+    return {'ok':True}
+
+
 class BillingSettings(BaseModel):
     options: list[float] = Field(min_length=1,max_length=12)
     default: float = Field(ge=0,le=1000000,allow_inf_nan=False)
@@ -382,8 +424,8 @@ async def edit_preset(model_id:str,cfg:ModelPreset,session=Depends(require_csrf)
 async def start_run(cfg, request, legacy=False):
     if cfg.distill and not cfg.authorized_distill:
         raise HTTPException(400,'训练用途测试需确认已取得授权')
-    if cfg.distill and cfg.mode=='quick':
-        raise HTTPException(400,'快速模式不包含训练用途测试')
+    if cfg.distill and cfg.mode not in ('standard','deep'):
+        raise HTTPException(400,'仅标准/深度档包含授权训练样例')
     request_id = request.headers.get('Idempotency-Key','') or (secrets.token_hex(16) if legacy else '')
     if not re.fullmatch(r'[A-Za-z0-9_-]{16,64}',request_id):
         raise HTTPException(400,'缺少有效的请求标识，请刷新页面。')

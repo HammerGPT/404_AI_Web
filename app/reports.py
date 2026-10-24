@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from collections import Counter
 import os
 from datetime import datetime
 from pathlib import Path
@@ -11,9 +12,9 @@ from .catalog import PROTOCOLS, REASONING_LABELS
 
 ROOT = Path(__file__).parent
 TEMPLATES = Environment(loader=FileSystemLoader(ROOT/'templates'),autoescape=select_autoescape(['html']))
-STATUS = {'pass':'通过','warn':'异常','error':'失败','sample':'仅采样','unknown':'未验证',
+STATUS = {'pass':'通过','warn':'失败','error':'失败','sample':'旧版未判定','unknown':'未验证',
           'pending':'等待','running':'检测中','skipped':'未执行','interrupted':'已中断','attention':'需核查'}
-MODES = {'quick':'快速','standard':'标准','deep':'深度'}
+MODES = {'quick':'快速','standard':'标准','deep':'深度','fingerprint':'指纹验货'}
 USAGE_LABELS = {'input_tokens':'输入 Token','output_tokens':'输出 Token','cache_read_tokens':'缓存读取',
                 'cache_write_tokens':'缓存写入','reasoning_tokens':'推理 Token'}
 
@@ -60,7 +61,8 @@ def present(report):
     counts = {s:sum(x.get('status')==s for x in samples) for s in ('pass','warn','error','sample')}
     issues = counts['warn']+counts['error']
     title = {'running':'正在检测','completed':'检测完成','failed':'检测中断','interrupted':'检测中断'}.get(state,'检测完成')
-    summary = f"已完成 {len(samples)}/{len(plan)} 项 · {counts['pass']} 项通过 · {issues} 项异常 · {counts['sample']} 项仅采样"
+    summary = f"已完成 {len(samples)}/{len(plan)} 项 · {counts['pass']} 项通过 · {issues} 项失败"
+    if counts['sample']:summary+=f" · {counts['sample']} 项旧版未判定"
     if state == 'running':
         current = next((c['title'] for c in cases if c['status']=='running'),None)
         result_line = '正在执行：'+current if current else '正在整理检测进度。'
@@ -71,6 +73,39 @@ def present(report):
         else:
             passed = [s['title'] for s in samples if s.get('status')=='pass']
             result_line = ('已验证：'+'、'.join(passed[:4])+('等项目。' if len(passed)>4 else '。')) if passed else '尚无通过的检测项，详见逐项记录。'
+    fingerprint=report.get('fingerprint')
+    groups=[]
+    comparisons=[]
+    if fingerprint:
+        summary=f"已完成 {len(samples)}/{len(plan)} 次请求 · {issues} 次测量/任务未通过"
+        if state!='running':
+            result_line=fingerprint.get('detail','')
+            issues=max(issues,int(fingerprint.get('status') in ('fail','unknown')))
+        grouped={}
+        for item in cases:
+            key=(item.get('fingerprint_group','other'),item.get('probe_id',item['kind']))
+            if key not in grouped:
+                grouped[key]={'group':key[0],'probe_id':key[1],'title':item['title'].rsplit(' · ',1)[0],
+                              'prompt':item.get('prompt'),'expected':item.get('expected'),'trials':[],
+                              'anchor':item['anchor']}
+            grouped[key]['trials'].append(item)
+        for group in grouped.values():
+            completed=[t for t in group['trials'] if t['status'] not in ('running','pending','skipped')]
+            failures=[t for t in completed if t['status']!='pass']
+            group.update(completed=len(completed),total=len(group['trials']),failures=len(failures),
+                         status='running' if any(t['status']=='running' for t in group['trials']) else 'warn' if failures else 'pass' if len(completed)==len(group['trials']) else 'pending' if state=='running' else 'skipped')
+            groups.append(group)
+        reference_measurement=fingerprint.get('reference_measurement') or {}
+        for group in groups:
+            if group['group'] not in ('behavior','capability'):continue
+            field='capabilities' if group['group']=='capability' else 'behavior'
+            own=fingerprint.get('measurement',{}).get(field,{}).get(group['probe_id'],{})
+            reference=reference_measurement.get(field,{}).get(group['probe_id'],{})
+            def distribution(values):
+                return '，'.join(f"{('正确' if k is True else '错误' if k is False else k)} × {v}" for k,v in Counter(values).items()) or '无有效记录'
+            comparisons.append({'name':group['title'],'reference':distribution(reference.get('values',[])),
+                                'observed':distribution(own.get('values',[])),'valid':len(own.get('values',[])),
+                                'invalid':own.get('invalid',0)})
     ttft_n = stats.get('ttft_samples',sum(s.get('ttft_ms') is not None for s in samples))
     metrics = [
         {'label':'TTFT · 平均首字延迟','value':duration(stats.get('ttft_ms')),'hint':f'{ttft_n} 个有效流式样本 · 首段正文'},
@@ -89,7 +124,8 @@ def present(report):
             'usage':total_usage,'issues':issues,'protocol':PROTOCOLS.get(report.get('protocol'),report.get('protocol','未记录')),
             'mode':MODES.get(report.get('mode'),report.get('mode','未记录')),'created_at':timestamp(report.get('created_at')),
             'legacy':report.get('schema_version',1)<2,
-            'reasoning_label':REASONING_LABELS.get(report.get('settings',{}).get('reasoning'),'兼容模式')}
+            'reasoning_label':REASONING_LABELS.get(report.get('settings',{}).get('reasoning'),'兼容模式'),
+            'fingerprint':fingerprint,'fingerprint_groups':groups,'fingerprint_comparisons':comparisons}
 
 
 TEMPLATES.globals.update(duration=duration,number=number,status_labels=STATUS)

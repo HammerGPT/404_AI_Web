@@ -4,6 +4,7 @@ import {setupReports,showReport,watchRun,stopWatching} from './report.js';
 import {setupHelp} from './help.js';
 import {basicPayload} from './basics.js';
 import {setupAccount,loadAccount,clearAccountSecrets} from './account.js';
+import {setupFingerprints,loadFingerprints,fingerprintPayload,fingerprintButtonLabel,updateFingerprintUI} from './fingerprints.js';
 
 let running=false;
 let activeId=null;
@@ -38,7 +39,7 @@ async function recoverRun(){
 }
 async function enterWorkspace(){
   show($('sessionCheck'),false);show($('loginScreen'),false);show($('workspace'));setPage('test');
-  try{await loadCatalog();await recoverRun();$('runBtn').disabled=running||submitting;}
+  try{await loadCatalog();await loadFingerprints();await recoverRun();$('runBtn').disabled=running||submitting;}
   catch(error){$('formError').textContent=error.message;show($('formError'));}
 }
 async function initialize(){
@@ -57,6 +58,7 @@ async function retryConnection(){
   try{
     const me=await api('/api/me');setCsrf(me.csrf);
     await loadCatalog();
+    await loadFingerprints();
     if(currentPage==='account')await loadAccount();
     if(sessionStorage.getItem('pendingRequest'))await recoverRun();
     $('runBtn').disabled=running||submitting;show($('networkNotice'),false);
@@ -72,6 +74,14 @@ window.addEventListener('online',()=>{if(!$('sessionCheck').classList.contains('
 window.addEventListener('run-state',event=>{
   running=event.detail.state==='running';activeId=event.detail.id;
   $('runBtn').disabled=running||submitting;$('newTest').disabled=running;
+  if(!running)loadFingerprints().catch(()=>{});
+});
+window.addEventListener('fingerprint-capture',()=>{
+  if(running){networkNotice('请先完成当前检测，再建立参考指纹。');return;}
+  activeId=null;sessionStorage.removeItem('activeRunId');setPage('test');
+  $('baseUrl').value='';$('apiKey').value='';$('fingerprintTrusted').checked=false;
+  const mode=document.querySelector('input[name="mode"][value="fingerprint"]');mode.checked=true;mode.dispatchEvent(new Event('change'));
+  $('fingerprintAction').value='reference';updateFingerprintUI();$('baseUrl').focus();window.scrollTo({top:0});
 });
 $('loginForm').addEventListener('submit',async event=>{
   event.preventDefault();show($('loginError'),false);$('loginBtn').disabled=true;
@@ -84,7 +94,7 @@ $('navTest').addEventListener('click',()=>setPage(activeId?'run':'test'));
 $('navHistory').addEventListener('click',()=>{setPage('history');loadHistory();});
 $('navSettings').addEventListener('click',()=>setPage('settings'));
 $('navAccount').addEventListener('click',()=>{setPage('account');loadAccount();});
-$('newTest').addEventListener('click',()=>{if(running)return;activeId=null;sessionStorage.removeItem('activeRunId');show($('formError'),false);setPage('test');});
+$('newTest').addEventListener('click',()=>{if(running)return;activeId=null;sessionStorage.removeItem('activeRunId');show($('formError'),false);setPage('test');$('fingerprintAction').value='verify';$('fingerprintTrusted').checked=false;updateFingerprintUI();window.scrollTo({top:0});});
 $('refreshHistory').addEventListener('click',loadHistory);
 $('closeHistoryDetail').addEventListener('click',()=>show($('historyDetail'),false));
 $('toggleKey').addEventListener('click',()=>{$('apiKey').type=$('apiKey').type==='password'?'text':'password';});
@@ -106,14 +116,14 @@ function createConfig(){
   return {base_url:$('baseUrl').value.trim(),key:$('apiKey').value.trim(),model:$('model').value.trim(),
     mode:document.querySelector('input[name="mode"]:checked').value,protocol:$('protocol').value,
     label:$('groupLabel').value.trim(),...basicPayload(),token_field:$('tokenField').value,
-    distill:$('distill').checked,authorized_distill:$('distillAuth').checked,custom_headers:custom,rates};
+    distill:$('distill').checked,authorized_distill:$('distillAuth').checked,custom_headers:custom,rates,...fingerprintPayload()};
 }
 $('testForm').addEventListener('submit',async event=>{
   event.preventDefault();if(submitting||running)return;show($('formError'),false);
   let cfg;
   try{
     cfg=createConfig();if(cfg.distill&&!cfg.authorized_distill)throw new Error('请确认已取得训练数据用途授权');
-    if(cfg.distill&&cfg.mode==='quick')throw new Error('快速检测不包含训练数据样例，请选择标准或深度模式');
+    if(cfg.distill&&!['standard','deep'].includes(cfg.mode))throw new Error('训练样例仅适用于标准或深度模式');
     submitting=true;$('runBtn').disabled=true;$('runBtn').textContent='正在启动…';
     const requestId=crypto.randomUUID();sessionStorage.setItem('pendingRequest',requestId);
     const result=await api('/api/runs',{method:'POST',headers:{'Idempotency-Key':requestId},body:JSON.stringify(cfg)});
@@ -125,12 +135,12 @@ $('testForm').addEventListener('submit',async event=>{
     else sessionStorage.removeItem('pendingRequest');
   }finally{
     if(cfg){cfg.key='';cfg.custom_headers={};}
-    $('apiKey').value='';submitting=false;$('runBtn').disabled=running;$('newTest').disabled=running;$('runBtn').textContent='开始检测 ↗';
+    $('apiKey').value='';submitting=false;$('runBtn').disabled=running;$('newTest').disabled=running;$('runBtn').textContent=fingerprintButtonLabel();
   }
 });
 const stateLabels={running:'检测中',interrupted:'已中断',failed:'已中断'};
 const resultLabels={pass:'已完成',attention:'需核查'};
-const modeLabels={quick:'快速',standard:'标准',deep:'深度'};
+const modeLabels={quick:'快速',standard:'标准',deep:'深度',fingerprint:'指纹验货'};
 async function loadHistory(){
   const target=$('historyRows');target.innerHTML='<div class="empty-state">正在加载…</div>';
   try{
@@ -145,4 +155,4 @@ $('historyRows').addEventListener('click',async event=>{
     await showReport(button.dataset.report,$('historyReportBody'));show($('historyDetail'));$('historyDetail').scrollIntoView({behavior:'smooth'});
   }catch(error){$('historyNotice').textContent=error.message;}finally{button.disabled=false;}
 });
-setupModels();setupReports();setupHelp();setupAccount();initialize();
+setupModels();setupReports();setupHelp();setupAccount();setupFingerprints();initialize();
