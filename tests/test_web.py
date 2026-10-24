@@ -1,6 +1,3 @@
-import os
-os.environ['ADMIN_PASSWORD']='TEST_ONLY_PASSWORD_123456'
-os.environ['DB_PATH']='/tmp/channelcheck-test.db'
 from fastapi.testclient import TestClient
 from app.main import app
 

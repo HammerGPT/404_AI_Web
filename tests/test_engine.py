@@ -46,7 +46,8 @@ def test_usage_gemini_thinking_in_output():
 def test_build_payload():
     p=build_payload('anthropic','claude-x','reasoning','a',80)
     assert p['max_tokens']>=1600
-    assert p['thinking']['budget_tokens']==1024
+    assert 'thinking' not in p
+    assert build_payload('anthropic','claude-x','reasoning','a',80,reasoning='on')['thinking']['type']=='adaptive'
     p=build_payload('openai_chat','gpt-6','connect','a',80)
     assert 'max_completion_tokens' in p
     p=build_payload('openai_responses','gpt-6','tool','a',80)
@@ -87,3 +88,38 @@ async def test_mock_suite(monkeypatch):
     assert report['stats']['usage']['reported_requests']==4
     assert report['stats']['estimated_cost_usd'] is not None
     assert 'secret' not in json.dumps(report)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status_code', [401, 429, 502, 0])
+async def test_stream_error_does_not_persist_provider_body(monkeypatch, tmp_path, status_code):
+    import app.engine as engine
+    from app import store
+
+    fake_key = 'FAKE_KEY_FOR_ERROR_REGRESSION'
+
+    class FakeResp:
+        status_code = 200
+
+    async def fake_request(*args, **kwargs):
+        return FakeResp(), json.dumps({'choices': [{'message': {'content': 'PING'}}]}).encode()
+
+    async def fake_stream(*args, **kwargs):
+        yield ('error', status_code, 'provider-private-details: ' + fake_key)
+
+    monkeypatch.setattr(engine, 'pinned_request', fake_request)
+    monkeypatch.setattr(engine, 'pinned_stream', fake_stream)
+    monkeypatch.setattr(store, 'DB', tmp_path / 'reports.db')
+    report = await run_suite({'base_url': 'https://example.com/v1', 'key': fake_key,
+                              'model': 'test-model', 'mode': 'quick', 'protocol': 'openai_chat'})
+    sample = report['samples'][-1]
+    assert sample['status'] == 'error'
+    if status_code:
+        assert f'HTTP {status_code}' in sample['note']
+    else:
+        assert '大小上限' in sample['note']
+    store.init()
+    store.save(report)
+    saved = json.dumps(store.get(report['id']))
+    assert fake_key not in saved
+    assert 'provider-private-details' not in saved

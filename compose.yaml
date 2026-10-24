@@ -2,8 +2,9 @@ services:
   app:
     build: .
     restart: unless-stopped
+    shm_size: 256m
     environment:
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set strong ADMIN_PASSWORD in .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       COOKIE_SECURE: "1"
       DB_PATH: /data/tester.db
       ALLOWED_API_HOSTS: ${ALLOWED_API_HOSTS:-}

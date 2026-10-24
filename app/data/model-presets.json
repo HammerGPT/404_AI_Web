@@ -1,0 +1,119 @@
+[
+  {
+    "name": "GPT-6.1 Sol",
+    "model_id": "gpt-6.1-sol",
+    "brand": "openai",
+    "protocol": "openai_responses",
+    "reasoning_options": [
+      "auto",
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "name": "GPT-6 Astra",
+    "model_id": "gpt-6-astra",
+    "brand": "openai",
+    "protocol": "openai_responses",
+    "reasoning_options": [
+      "auto",
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "name": "GPT-6 Luna",
+    "model_id": "gpt-6-luna",
+    "brand": "openai",
+    "protocol": "openai_responses",
+    "reasoning_options": [
+      "auto",
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "name": "Claude Opus 5.5",
+    "model_id": "claude-opus-5-5",
+    "brand": "anthropic",
+    "protocol": "anthropic",
+    "reasoning_options": [
+      "auto",
+      "adaptive",
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "name": "Claude Sonnet 5.5",
+    "model_id": "claude-sonnet-5-5",
+    "brand": "anthropic",
+    "protocol": "anthropic",
+    "reasoning_options": [
+      "auto",
+      "adaptive",
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "name": "Claude Haiku 5.5",
+    "model_id": "claude-haiku-5-5",
+    "brand": "anthropic",
+    "protocol": "anthropic",
+    "reasoning_options": [
+      "auto",
+      "adaptive",
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "name": "Gemini 3.8 Flash",
+    "model_id": "gemini-3.8-flash",
+    "brand": "google",
+    "protocol": "gemini",
+    "reasoning_options": [
+      "auto",
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "name": "Gemini 4 Argon",
+    "model_id": "gemini-4-argon",
+    "brand": "google",
+    "protocol": "gemini",
+    "reasoning_options": [
+      "auto",
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "name": "DeepSeek Flash",
+    "model_id": "deepseek-flash",
+    "brand": "deepseek",
+    "protocol": "openai_chat",
+    "reasoning_options": [
+      "auto"
+    ]
+  },
+  {
+    "name": "DeepSeek V4 Pro",
+    "model_id": "deepseek-v4-pro",
+    "brand": "deepseek",
+    "protocol": "openai_chat",
+    "reasoning_options": [
+      "auto"
+    ]
+  }
+]

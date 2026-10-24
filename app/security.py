@@ -1,6 +1,7 @@
 """Endpoint validation and DNS-pinned transport to reduce SSRF and DNS rebinding."""
 from __future__ import annotations
 import ipaddress
+import asyncio
 import os
 import socket
 from urllib.parse import urlsplit, urlunsplit
@@ -103,7 +104,7 @@ def api_path(base: str, protocol: str, model: str = '') -> str:
     return urlunsplit((u.scheme, u.netloc, p + suffix, '', ''))
 
 async def pinned_request(method: str, url: str, headers: dict, payload: dict | None = None, timeout: float = 40):
-    endpoint, host, extensions = pin_url(url)
+    endpoint, host, extensions = await asyncio.to_thread(pin_url, url)
     safe_headers = {**headers, **host}
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=12), follow_redirects=False, trust_env=False) as client:
         async with client.stream(method, endpoint, headers=safe_headers, json=payload, extensions=extensions) as response:
@@ -119,19 +120,24 @@ async def pinned_request(method: str, url: str, headers: dict, payload: dict | N
 async def pinned_stream(url: str, headers: dict, payload: dict, timeout: float = 40, params: dict | None = None):
     """Async generator returns events as (elapsed, line)."""
     import time
-    endpoint, host, extensions = pin_url(url)
+    begin = time.perf_counter()
+    endpoint, host, extensions = await asyncio.to_thread(pin_url, url)
     safe_headers = {**headers, **host}
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=12), follow_redirects=False, trust_env=False) as client:
-        begin = time.perf_counter()
         async with client.stream('POST', endpoint, headers=safe_headers, json=payload, params=params, extensions=extensions) as response:
             if response.status_code >= 300:
-                blob = await response.aread()
-                yield ('error', response.status_code, blob[:3000].decode('utf-8', 'replace'))
+                yield ('error', response.status_code, '')
                 return
             received = 0
-            async for line in response.aiter_lines():
-                received += len(line)
+            buffer = ''
+            async for text in response.aiter_text():
+                received += len(text.encode('utf-8'))
                 if received > 1024 * 1024:
                     yield ('error', 0, '流式响应超过大小上限')
                     return
-                yield ('line', round(time.perf_counter() - begin, 4), line)
+                buffer += text
+                while '\n' in buffer:
+                    line, buffer = buffer.split('\n', 1)
+                    yield ('line', time.perf_counter() - begin, line.rstrip('\r'))
+            if buffer:
+                yield ('line', time.perf_counter() - begin, buffer.rstrip('\r'))

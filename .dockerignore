@@ -1,4 +1,8 @@
 .env
+.env.*
+.venv/
+venv/
+backups/
 *.db
 __pycache__/
 .pytest_cache/

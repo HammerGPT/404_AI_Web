@@ -16,21 +16,33 @@
 ## 开发流程
 
 1. 查看项目当前源码及 Git 状态（若已有仓库）。
-2. 本地执行 `python -m pytest -q`，确认当前 11 项测试基线。
+2. 本地执行 `.venv/bin/python -m pytest -q`，确认测试基线（2026-10-24 账户设置更新后为 86 项）。
 3. 仅修改明确发现的问题，补充针对性单元或模拟集成测试。
 4. 对需真实 Key 才能验证的结果标记「未验证」，不要硬编码成功或臆测返回格式。
 5. 完成后更新 `IMPLEMENTATION_STATUS.md`（更改项、测试情况、已知风险），必要时同步 `SPEC.md`、`README.md` 与 `QUICKSTART.md`。
 
 ## 文件速查
 
-- 页面：`app/static/index.html`、`style.css`、`app.js`
-- API/登录/报告：`app/main.py`
-- 用例/协议/统计：`app/engine.py`
+- 页面：`app/static/index.html`、`style.css`、`api.js`、`models.js`、`basics.js`、`report.js`、`app.js`
+- API：`app/main.py`；持久化认证：`app/auth.py`；账户界面：`static/account.js`；模型目录：`catalog.py`；任务生命周期：`runs.py`
+- 用例/统计：`app/engine.py`；协议解析：`app/adapters.py`；报告/PDF：`reports.py`、`templates/`、`static/report.css`
 - HTTP 安全边界：`app/security.py`
 - 持久化：`app/store.py`
 - 自动化测试：`tests/`
-- 部署：`compose.yaml`、`Dockerfile`、`Caddyfile`
+- 部署：`compose.yaml`、`Dockerfile`、`Caddyfile`；本机 `ai.heliki.com` 使用 `compose.nginx.yaml` + 宿主机 Nginx，实际运行与维护步骤见 `DEPLOYMENT.md`，不要启动默认 Caddy 占用 80/443。
 
 ## 本地启动
 
 参考 `QUICKSTART.md`。开发依赖可通过 `pip install -r requirements.txt` 安装；运行测试需要另外安装 `pytest`、`pytest-asyncio`。使用测试密码仅限本机开发，不要保存在生产配置。
+
+## V1.2 维护要点
+
+模型预置是 SQLite 数据，`app/data/model-presets.json` 仅首次导入，不要用写死的前端数组替代管理入口。页面、历史和 PDF 必须复用同一报告数据与模板。
+
+不要破坏请求去重和单任务约束；断线只恢复订阅，进程重启标记中断，不持久化 Key 或自动重放。保持 `reports` 原八列结构，以免破坏旧镜像回滚。
+
+前端采用原生 ES modules，语法检查用 `node --input-type=module --check < app/static/<文件>.js`。PDF 验收要检查分页、中文复制和完整证据，不仅判断文件能否打开。`scripts/prepare_pdf_font.py` 在构建时处理 Noto 字形的重复 Unicode 映射。
+
+基础设置：思考选项以 model_reasoning 表和共享协议元数据为准；倍率以 settings.billing 为准。auto 不附加思考参数，不根据模型品牌推断计费倍率。保留原 model_presets 七列以兼容旧镜像。
+
+账户维护：登录会话已持久化，普通重启应保留；密码仅以数据库哈希为准，ADMIN_PASSWORD 仅首次初始化。不要用旧环境密码覆盖后台密码；恢复密码须明确授权并用交互 CLI。回滚到旧认证版本前必须核对凭据迁移，详见 DEPLOYMENT.md。

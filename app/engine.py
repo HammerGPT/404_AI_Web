@@ -1,4 +1,4 @@
-"""Low-cost black-box checks. Claims are deliberately evidence-limited."""
+"""Sequential, evidence-based channel checks; no credentials in report state."""
 from __future__ import annotations
 import asyncio
 import json
@@ -7,13 +7,10 @@ import statistics
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any
 import httpx
+from .adapters import TOOL, TEXT_LIMIT, StreamResult, build_payload, normalize_usage, parse_result
+from .catalog import infer_protocol
 from .security import api_path, pinned_request, pinned_stream, TargetError
-
-
-TOOL = {"name": "convert_length", "description": "Convert centimeters to millimeters.",
-        "parameters": {"type": "object", "properties": {"centimeters": {"type": "number"}}, "required": ["centimeters"]}}
 
 CASES = [
     ('connect', '连接与协议', '请仅输出 PING，不要附加其他文字。', 80),
@@ -42,171 +39,89 @@ def cases_for(mode: str, distill: bool = False):
     return cases + ([DISTILL] if distill and mode != 'quick' else [])
 
 
+EXPECTED_TOOLS = {'tool': {'centimeters': 12}, 'tool2': {'centimeters': 25}}
+EXPECTED_JSON = {'json': {'code': 'OK', 'count': 3}, 'json2': {'valid': True, 'items': [1, 2, 3]}}
+RULES = {
+    'connect': '完整响应，正文严格等于 PING。',
+    'fingerprint': '记录数字选择样本，不以此判定模型身份。',
+    'json': '正文可直接解析为 JSON，字段及值符合要求。',
+    'stream': '收到正文、协议结束标记及可解析事件；另外记录 Usage 是否完整。',
+    'tool': '仅调用指定函数，函数名及参数与题目要求一致；不实际执行工具。',
+    'reasoning': '记录接口公开返回的推理文本/摘要或推理用量；不据此认证模型身份。',
+    'instruction': '仅输出 RED、GREEN、BLUE 三行。',
+    'logic': '严格回答“不能”。',
+    'logic2': '严格回答“甲”。',
+    'structured_sample': 'JSON 包含 instruction、input、output、explanation 四个非空字符串字段。',
+}
+USAGE_FIELDS = ('input_tokens','output_tokens','cache_read_tokens','cache_write_tokens','reasoning_tokens')
+CASE_TIMEOUT_SECONDS = 90
+
+
+def case_spec(case):
+    kind, title, prompt, _ = case
+    family = kind.rstrip('0123456789')
+    return {'kind': kind, 'title': title, 'prompt': prompt,
+            'expected': RULES.get(kind, RULES.get(family, '记录实际响应。')),
+            'expected_tool': {'name': TOOL['name'], 'arguments': EXPECTED_TOOLS[kind]} if kind in EXPECTED_TOOLS else None}
+
+
 def resolve_protocol(protocol: str, base: str, model: str) -> str:
-    if protocol != 'auto':
-        return protocol
-    # The bulk of token intermediaries expose OpenAI-compatible endpoints.
-    if 'generativelanguage.googleapis.com' in base:
-        return 'gemini'
-    if 'api.anthropic.com' in base:
-        return 'anthropic'
-    return 'openai_chat'
+    return infer_protocol(model, base) if protocol == 'auto' else protocol
 
 
-def normalize_usage(raw: dict, protocol: str) -> dict:
-    raw = raw or {}
-    if protocol == 'anthropic':
-        base = raw.get('input_tokens', 0) or 0
-        cr = raw.get('cache_read_input_tokens', 0) or 0
-        cw = raw.get('cache_creation_input_tokens', 0) or 0
-        return {'input_tokens': base + cr + cw, 'output_tokens': raw.get('output_tokens', 0) or 0,
-                'cache_read_tokens': cr, 'cache_write_tokens': cw,
-                'reasoning_tokens': (raw.get('output_tokens_details') or {}).get('thinking_tokens', 0) or 0,
-                'reported': bool(raw)}
-    if protocol == 'gemini':
-        return {'input_tokens': raw.get('promptTokenCount', 0) or 0,
-                'output_tokens': (raw.get('candidatesTokenCount', 0) or 0) + (raw.get('thoughtsTokenCount', 0) or 0),
-                'cache_read_tokens': raw.get('cachedContentTokenCount', 0) or 0,
-                'cache_write_tokens': 0, 'reasoning_tokens': raw.get('thoughtsTokenCount', 0) or 0,
-                'reported': bool(raw)}
-    if protocol == 'openai_responses':
-        details = raw.get('input_tokens_details') or {}
-        out = raw.get('output_tokens_details') or {}
-        return {'input_tokens': raw.get('input_tokens', 0) or 0, 'output_tokens': raw.get('output_tokens', 0) or 0,
-                'cache_read_tokens': details.get('cached_tokens', 0) or 0,
-                'cache_write_tokens': details.get('cache_write_tokens', 0) or 0,
-                'reasoning_tokens': out.get('reasoning_tokens', 0) or 0, 'reported': bool(raw)}
-    prompt = raw.get('prompt_tokens_details') or {}
-    completion = raw.get('completion_tokens_details') or {}
-    return {'input_tokens': raw.get('prompt_tokens', 0) or 0, 'output_tokens': raw.get('completion_tokens', 0) or 0,
-            'cache_read_tokens': prompt.get('cached_tokens', 0) or 0,
-            'cache_write_tokens': prompt.get('cache_write_tokens', 0) or 0,
-            'reasoning_tokens': completion.get('reasoning_tokens', 0) or 0,
-            'reported': bool(raw)}
+def redact(value, secrets, keys=False):
+    """Redact before clipping, including upstream echoes and custom header values."""
+    if isinstance(value, str):
+        for secret in sorted(set(s for s in secrets if s), key=len, reverse=True):
+            value = value.replace(secret, '[已脱敏]')
+        return value
+    if isinstance(value, dict):
+        return {(redact(k,secrets) if keys else k):redact(v,secrets,keys) for k,v in value.items()}
+    if isinstance(value, list):
+        return [redact(v, secrets, keys) for v in value]
+    return value
 
 
 def estimate_cost(totals: dict, rates: dict | None) -> float | None:
     if not rates or rates.get('input') is None or rates.get('output') is None:
         return None
-    inp, out = totals.get('input_tokens', 0), totals.get('output_tokens', 0)
-    cr, cw = totals.get('cache_read_tokens', 0), totals.get('cache_write_tokens', 0)
-    uncached = max(0, inp - cr - cw)
-    price = (uncached * float(rates['input']) + cr * float(rates.get('cache_read', rates['input'])) +
-             cw * float(rates.get('cache_write', rates['input'])) + out * float(rates['output'])) / 1_000_000
-    return round(price * float(rates.get('group_ratio', 1)), 8)
+    inp, out = totals.get('input_tokens'), totals.get('output_tokens')
+    if inp is None or out is None:
+        return None
+    cr, cw = totals.get('cache_read_tokens') or 0, totals.get('cache_write_tokens') or 0
+    price = (max(0, inp-cr-cw)*rates['input'] + cr*rates.get('cache_read',rates['input']) +
+             cw*rates.get('cache_write',rates['input']) + out*rates['output']) / 1_000_000
+    return round(price*rates.get('group_ratio',1),8)
 
 
-def build_payload(protocol: str, model: str, kind: str, prompt: str, token_max: int, reasoning: str = 'auto', token_field='auto') -> dict:
-    if kind == 'reasoning' and protocol == 'anthropic':
-        token_max = max(token_max, 1600)
-    elif kind == 'reasoning' and protocol in ('gemini','openai_chat','openai_responses'):
-        token_max = max(token_max, 800)
-    if protocol == 'openai_chat':
-        field = ('max_completion_tokens' if model.lower().startswith(('o1', 'o3', 'o4', 'gpt-5', 'gpt-6')) else 'max_tokens') if token_field == 'auto' else token_field
-        payload = {'model': model, 'messages': [{'role': 'user', 'content': prompt}], field: token_max}
-        if kind in ('stream', 'stream2'):
-            payload['stream'] = True
-            payload['stream_options'] = {'include_usage': True}
-        if kind in ('tool', 'tool2'):
-            payload['tools'] = [{'type': 'function', 'function': TOOL}]
-            payload['tool_choice'] = {'type': 'function', 'function': {'name': 'convert_length'}}
-        if kind == 'reasoning' and reasoning != 'off' and model.lower().startswith(('gpt-', 'o1', 'o3', 'o4')):
-            payload['reasoning_effort'] = 'low'
-        return payload
-    if protocol == 'openai_responses':
-        payload = {'model': model, 'input': prompt, 'max_output_tokens': token_max, 'store': False}
-        if kind in ('stream', 'stream2'):
-            payload['stream'] = True
-        if kind in ('tool', 'tool2'):
-            payload['tools'] = [{'type': 'function', **TOOL}]
-            payload['tool_choice'] = {'type': 'function', 'name': 'convert_length'}
-        if kind == 'reasoning' and reasoning != 'off':
-            payload['reasoning'] = {'effort': 'low', 'summary': 'auto'}
-        return payload
-    if protocol == 'anthropic':
-        payload = {'model': model, 'max_tokens': token_max, 'messages': [{'role': 'user', 'content': prompt}]}
-        if kind in ('stream', 'stream2'):
-            payload['stream'] = True
-        if kind in ('tool', 'tool2'):
-            payload['tools'] = [{'name': TOOL['name'], 'description': TOOL['description'], 'input_schema': TOOL['parameters']}]
-            payload['tool_choice'] = {'type': 'tool', 'name': 'convert_length'}
-        if kind == 'reasoning' and reasoning != 'off':
-            payload['thinking'] = {'type': 'enabled', 'budget_tokens': 1024}
-        return payload
-    if protocol == 'gemini':
-        payload = {'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
-                   'generationConfig': {'maxOutputTokens': token_max}}
-        if kind in ('tool', 'tool2'):
-            payload['tools'] = [{'functionDeclarations': [{'name': TOOL['name'], 'description': TOOL['description'], 'parameters': TOOL['parameters']}]}]
-            payload['toolConfig'] = {'functionCallingConfig': {'mode': 'ANY', 'allowedFunctionNames': ['convert_length']}}
-        if kind == 'reasoning' and reasoning != 'off':
-            payload['generationConfig']['thinkingConfig'] = {'includeThoughts': True}
-        return payload
-    raise ValueError('Unsupported API')
-
-
-def parse_result(data: dict, protocol: str, kind: str) -> dict:
-    model = data.get('model') or data.get('modelVersion')
-    thinking = False
-    has_tool = False
-    content = ''
-    raw_usage = data.get('usage') or data.get('usageMetadata') or {}
-    if protocol == 'openai_chat':
-        msg = ((data.get('choices') or [{}])[0].get('message') or {})
-        text = msg.get('content') or ''
-        content = text if isinstance(text, str) else json.dumps(text, ensure_ascii=False)
-        has_tool = bool(msg.get('tool_calls'))
-        thinking = bool(msg.get('reasoning_content') or msg.get('reasoning') or ((raw_usage.get('completion_tokens_details') or {}).get('reasoning_tokens', 0)))
-    elif protocol == 'openai_responses':
-        content = ''
-        for item in data.get('output') or []:
-            if item.get('type') == 'function_call':
-                has_tool = True
-            if item.get('type') == 'reasoning':
-                thinking = True
-            for part in item.get('content') or []:
-                if part.get('type') == 'output_text':
-                    content += part.get('text', '')
-        content = content or data.get('output_text') or ''
-        thinking = thinking or bool((raw_usage.get('output_tokens_details') or {}).get('reasoning_tokens', 0))
-    elif protocol == 'anthropic':
-        for block in data.get('content') or []:
-            if block.get('type') == 'text': content += block.get('text', '')
-            elif block.get('type') == 'tool_use': has_tool = True
-            elif block.get('type') in ('thinking', 'redacted_thinking'): thinking = True
-        thinking = thinking or bool((raw_usage.get('output_tokens_details') or {}).get('thinking_tokens', 0))
-    elif protocol == 'gemini':
-        for candidate in data.get('candidates') or []:
-            for part in (candidate.get('content') or {}).get('parts') or []:
-                if 'functionCall' in part: has_tool = True
-                if part.get('thought'): thinking = True
-                elif 'text' in part: content += part['text']
-        thinking = thinking or bool(raw_usage.get('thoughtsTokenCount'))
-    return {'text': content[:2000], 'model_returned': model, 'thinking_observed': thinking,
-            'tool_observed': has_tool, 'usage': normalize_usage(raw_usage, protocol),
-            'usage_raw': raw_usage}
-
-
-def check_assertion(kind: str, text: str, tool: bool) -> tuple[str, str]:
+def check_assertion(kind: str, text: str, tool=False) -> tuple[str,str]:
     value = text.strip()
-    if kind == 'connect': return ('pass' if 'PING' in value.upper() else 'warn', '基础响应检查')
-    if kind.startswith('fingerprint'): return ('sample', '行为样本：不单独证明模型身份')
-    if kind.startswith('stream'): return ('pass' if value else 'warn', '流式内容输出')
-    if kind.startswith('tool'): return ('pass' if tool else 'warn', '是否产生正确类型的工具调用')
-    if kind == 'instruction': return ('pass' if value.splitlines() == ['RED', 'GREEN', 'BLUE'] else 'warn', '行数与格式约束')
-    if kind == 'logic': return ('pass' if ('不能' in value or '无法' in value) else 'warn', '逻辑判断')
-    if kind == 'logic2': return ('pass' if value == '甲' else 'warn', '排序推理')
-    if kind in ('json', 'json2', 'structured_sample'):
+    if kind == 'connect':
+        return ('pass' if value == 'PING' else 'warn', '正文与 PING 严格匹配' if value == 'PING' else '正文不等于要求的 PING')
+    if kind.startswith('fingerprint') or kind == 'reasoning':
+        return 'sample', RULES['reasoning' if kind == 'reasoning' else 'fingerprint']
+    if kind.startswith('stream'):
+        return ('pass' if value else 'warn', '正文输出检查')
+    if kind in EXPECTED_TOOLS:
+        ok = (isinstance(tool, list) and len(tool) == 1 and tool[0].get('name') == TOOL['name']
+              and tool[0].get('arguments') == EXPECTED_TOOLS[kind])
+        return ('pass' if ok else 'warn', '函数名与参数均符合预期' if ok else '未产生要求的函数调用，或函数名/参数不符合预期')
+    if kind == 'instruction':
+        ok = value.splitlines() == ['RED','GREEN','BLUE']
+    elif kind in ('logic','logic2'):
+        ok = value == ('不能' if kind == 'logic' else '甲')
+    elif kind in (*EXPECTED_JSON, 'structured_sample'):
         try:
             obj = json.loads(value)
-            if kind == 'json': ok = obj.get('code') == 'OK' and obj.get('count') == 3
-            elif kind == 'json2': ok = obj == {'valid': True, 'items': [1, 2, 3]}
-            else: ok = all(isinstance(obj.get(k), str) and obj[k].strip() for k in ('instruction','input','output','explanation'))
-            return ('pass' if ok else 'warn', '严格 JSON 及指定字段检查')
-        except (ValueError, TypeError, AttributeError):
-            return 'warn', '未返回有效 JSON'
-    if kind == 'reasoning': return 'sample', '推理能力与内容字段单独核对'
-    return 'sample', '样本记录'
+            if kind == 'structured_sample':
+                ok = isinstance(obj,dict) and all(isinstance(obj.get(k),str) and obj[k].strip() for k in ('instruction','input','output','explanation'))
+            else:
+                ok = obj == EXPECTED_JSON[kind]
+        except (ValueError,TypeError):
+            return 'warn', '正文不是可直接解析的 JSON'
+    else:
+        return 'sample', '已记录样本'
+    return ('pass' if ok else 'warn', '响应符合预期' if ok else '响应与指定内容或字段要求不一致')
 
 
 def request_headers(protocol: str, key: str, custom: dict | None = None):
@@ -216,116 +131,83 @@ def request_headers(protocol: str, key: str, custom: dict | None = None):
         headers = {'x-goog-api-key': key}
     else:
         headers = {'Authorization': f'Bearer {key}'}
-    headers['Content-Type'] = 'application/json'
-    headers['Accept'] = 'application/json'
-    # No auth/header override via custom headers.
-    for k,v in (custom or {}).items():
-        if k.lower() not in {'host','authorization','x-api-key','x-goog-api-key','cookie','proxy-authorization','content-length','transfer-encoding','connection','accept-encoding'}:
-            headers[k] = v
+    headers.update({'Content-Type': 'application/json', 'Accept': 'application/json'})
+    forbidden = {'host','authorization','x-api-key','x-goog-api-key','cookie','proxy-authorization','content-length','transfer-encoding','connection','accept-encoding'}
+    headers.update({k:v for k,v in (custom or {}).items() if k.lower() not in forbidden})
     return headers
 
 
 async def run_one(cfg: dict, protocol: str, case: tuple) -> dict:
     kind, title, prompt, max_output = case
-    if cfg['mode'] == 'deep': max_output = min(320, max_output * 2)
-    payload = build_payload(protocol, cfg['model'], kind, prompt, max_output, cfg.get('reasoning','auto'), cfg.get('token_field','auto'))
-    endpoint = api_path(cfg['base_url'], protocol, cfg['model'])
-    gemini_stream = protocol == 'gemini' and kind in ('stream', 'stream2')
-    if gemini_stream:
-        endpoint = endpoint.replace(':generateContent', ':streamGenerateContent')
-    kind_for_transport = kind
-    headers = request_headers(protocol, cfg['key'], cfg.get('custom_headers'))
+    if cfg['mode'] == 'deep':
+        max_output = min(320,max_output*2)
+    secrets = [cfg['key'], *cfg.get('custom_headers',{}).values()]
+    clean = lambda value: redact(value, secrets)
+    payload = build_payload(protocol,cfg['model'],kind,prompt,max_output,cfg.get('reasoning','auto'),cfg.get('token_field','auto'))
+    endpoint = api_path(cfg['base_url'],protocol,cfg['model'])
+    streaming = kind.startswith('stream')
+    if streaming and protocol == 'gemini':
+        endpoint = endpoint.replace(':generateContent',':streamGenerateContent')
+    headers = request_headers(protocol,cfg['key'],cfg.get('custom_headers'))
+    item = {**case_spec(case), 'status':'error','note':'','latency_ms':None,'ttft_ms':None,
+            'reasoning_ttft_ms':None,'tps':None,'model_returned':None,'thinking_observed':False,
+            'tool_observed':False,'tool_calls':[], 'usage':normalize_usage({},protocol),'text':'',
+            'reasoning_text':'','response_complete':False,'http_status':None,
+            'request': {'method':'POST','path':httpx.URL(endpoint).path,'model':cfg['model'],
+                        'protocol':protocol,'parameters':{k:v for k,v in payload.items() if k not in ('messages','input','contents','model')}}}
     start = time.perf_counter()
-    item = {'kind':kind,'title':title,'status':'error','note':'','latency_ms':0,'ttft_ms':None,
-            'model_returned':None,'thinking_observed':False,'tool_observed':False,'usage':{},'text':''}
+    stream = StreamResult(protocol) if streaming else None
     try:
-        if kind_for_transport in ('stream','stream2'):
-            parts = []
-            raw_usage = {}
-            returned_model = None
-            thinking = False
-            tool = False
-            first_content = None
-            async for typ, at, line in pinned_stream(endpoint, headers, payload, timeout=45, params={'alt':'sse'} if gemini_stream else None):
+        if streaming:
+            async for typ, at, line in pinned_stream(endpoint,headers,payload,timeout=45,params={'alt':'sse'} if protocol=='gemini' else None):
                 if typ == 'error':
-                    item['note'] = f'HTTP {at}: {line[:260]}'
+                    item['http_status'] = at or None
+                    item['note'] = f'HTTP {at}（流式请求失败，请检查接口配置）' if at else '流式响应超过大小上限'
                     break
-                if not line.startswith('data:'):
-                    continue
-                data = line[5:].strip()
-                if not data or data == '[DONE]': continue
-                try: ev = json.loads(data)
-                except ValueError: continue
-                if protocol == 'openai_chat':
-                    returned_model = ev.get('model') or returned_model
-                    if ev.get('usage'): raw_usage = ev['usage']
-                    ch = ((ev.get('choices') or [{}])[0].get('delta') or {})
-                    piece = ch.get('content') or ''
-                    thinking |= bool(ch.get('reasoning_content') or ch.get('reasoning'))
-                    tool |= bool(ch.get('tool_calls'))
-                elif protocol == 'openai_responses':
-                    returned_model = (ev.get('response') or {}).get('model') or returned_model
-                    if ev.get('type') == 'response.completed':
-                        raw_usage = (ev.get('response') or {}).get('usage') or raw_usage
-                    piece = ev.get('delta', '') if ev.get('type') == 'response.output_text.delta' else ''
-                    thinking |= ev.get('type','').startswith('response.reasoning')
-                    tool |= ev.get('type') == 'response.output_item.added' and (ev.get('item') or {}).get('type') == 'function_call'
-                elif protocol == 'anthropic':
-                    if ev.get('type') == 'message_start':
-                        returned_model = (ev.get('message') or {}).get('model') or returned_model
-                        raw_usage = (ev.get('message') or {}).get('usage') or raw_usage
-                    if ev.get('type') == 'message_delta':
-                        raw_usage.update(ev.get('usage') or {})
-                    piece = ((ev.get('delta') or {}).get('text') or '') if ev.get('type') == 'content_block_delta' else ''
-                    thinking |= (ev.get('type') == 'content_block_start' and (ev.get('content_block') or {}).get('type') == 'thinking')
-                    tool |= (ev.get('type') == 'content_block_start' and (ev.get('content_block') or {}).get('type') == 'tool_use')
-                elif protocol == 'gemini':
-                    returned_model = ev.get('modelVersion') or returned_model
-                    if ev.get('usageMetadata'): raw_usage = ev['usageMetadata']
-                    piece = ''
-                    for candidate in ev.get('candidates') or []:
-                        for part in (candidate.get('content') or {}).get('parts') or []:
-                            if part.get('thought'): thinking = True
-                            elif 'text' in part: piece += part['text']
-                            if 'functionCall' in part: tool = True
+                if line.startswith('data:') and line[5:].strip():
+                    stream.feed(line[5:].strip(),at)
+            item.update(stream.result(clean))
+            if not item['note']:
+                item['http_status'] = 200
+                if stream.error:
+                    item['note'] = '上游返回流式错误事件，正文已隐藏'
                 else:
-                    piece = ''
-                if piece:
-                    if first_content is None: first_content = at
-                    if sum(map(len,parts)) < 2000: parts.append(piece[:2000])
-            if item['note']:
-                item['status'] = 'error'
-            else:
-                item.update({'text':''.join(parts)[:2000], 'model_returned':returned_model,
-                             'ttft_ms': round(first_content*1000) if first_content is not None else None,
-                             'thinking_observed':thinking, 'tool_observed':tool,
-                             'usage':normalize_usage(raw_usage,protocol)})
-                item['status'],item['note'] = check_assertion(kind,item['text'],tool)
+                    checks = [('正文',bool(stream.text)),('结束标记',stream.complete),('事件结构',stream.invalid_events == 0 and stream.events > 0),
+                              ('输入/输出用量',item['usage']['complete'])]
+                    item['status'] = 'pass' if all(ok for _,ok in checks) else 'warn'
+                    item['note'] = '；'.join(name + ('已验证' if ok else '未验证') for name,ok in checks)
         else:
-            response, raw = await pinned_request('POST', endpoint, headers, payload, timeout=55 if kind=='reasoning' else 40)
+            response, raw = await pinned_request('POST',endpoint,headers,payload,timeout=55 if kind=='reasoning' else 40)
+            item['http_status'] = response.status_code
             if response.status_code >= 300:
-                # Sanitize error: model/provider may echo user secrets; never persist arbitrary error payload.
-                item['note'] = f'HTTP {response.status_code}（可在服务器日志之外检查接口配置）'
+                item['note'] = f'HTTP {response.status_code}（请求失败，请检查接口配置）'
             else:
-                try:
-                    parsed = parse_result(json.loads(raw),protocol,kind)
-                except (ValueError,TypeError,IndexError,KeyError) as e:
-                    item['note'] = f'响应格式不符合预期：{type(e).__name__}'
-                else:
-                    item.update(parsed)
-                    item['status'],item['note'] = check_assertion(kind,item['text'],item['tool_observed'])
-    except (httpx.HTTPError,TargetError,asyncio.TimeoutError) as e:
-        item['note'] = f'请求失败：{type(e).__name__}'
-    item['latency_ms'] = round((time.perf_counter()-start)*1000)
-    # Raw provider data can contain extra information; store only normalized metrics.
-    item.pop('usage_raw',None)
-    return item
+                item.update(parse_result(clean(json.loads(raw)),protocol,kind))
+                item['status'],item['note'] = check_assertion(kind,item['text'],item['tool_calls'])
+                for call in item['tool_calls']:
+                    call['arguments'] = redact(call['arguments'],secrets,keys=True)
+        if item.get('finish_reason') in ('length','max_tokens','MAX_TOKENS','incomplete') and item['status'] != 'error':
+            item['status'] = 'warn'
+            item['note'] += '；达到输出上限，内容可能不完整'
+    except (httpx.HTTPError,TargetError,asyncio.TimeoutError) as error:
+        item['note'] = f'请求失败：{type(error).__name__}'
+    except (ValueError,TypeError,IndexError,KeyError,AttributeError):
+        item['note'] = '响应结构不符合当前协议'
+    # Preserve observed partial stream evidence on transport failures without passing it.
+    if stream and item['status'] == 'error':
+        item.update(stream.result(clean))
+    elapsed = time.perf_counter()-start
+    item['latency_ms'] = round(elapsed*1000,2)
+    output = item['usage'].get('output_tokens')
+    if item['status'] != 'error' and item['response_complete'] and output is not None and elapsed > 0:
+        item['tps'] = round(output/elapsed,2)
+    return clean(item)
 
 
 def build_sections(samples: list, protocol: str, model: str, distill_requested: bool) -> list:
     names = {x['kind']:x for x in samples}
     passed = [x for x in samples if x['status'] in ('pass','sample')]
-    errors = [x for x in samples if x['status'] == 'error']
+    errors = [x for x in samples if x['status'] in ('error','warn')]
     returned = [x['model_returned'] for x in samples if x.get('model_returned')]
     model_different = returned and any(x.lower() != model.lower() for x in returned)
     usage_reported = [x for x in samples if x.get('usage',{}).get('reported')]
@@ -345,36 +227,72 @@ def build_sections(samples: list, protocol: str, model: str, distill_requested: 
       {'name':'能力与输出完整性', 'status':('pass' if structured and all(x['status']=='pass' for x in structured) else 'attention' if structured else 'unknown'),
        'detail': (f"本次 {sum(x['status']=='pass' for x in structured)}/{len(structured)} 个约束测试通过；样本量有限。" if structured else '当前模式仅进行了基本内容采样。')},
       {'name':'基础性能与稳定性', 'status':'attention' if errors else 'pass' if samples else 'unknown',
-       'detail': f"本次 {len(passed)}/{len(samples)} 次请求获得可用响应；小样本不代表长期 SLA。"},
+       'detail': f"本次已完成 {len(samples)} 项，其中 {len(errors)} 项出现异常；小样本不代表长期 SLA。"},
       {'name':'蒸馏用途适用性', 'status': ('pass' if names.get('structured_sample',{}).get('status') == 'pass' else 'attention' if distill_requested else 'unknown'),
        'detail': ('仅验证一条训练格式样例；必须另行核验原厂及渠道的训练用途授权。' if distill_requested else '未执行训练数据样本检测；普通能力测试不等于蒸馏授权。')}
     ]
     return sections
 
-async def run_suite(cfg: dict, update=None) -> dict:
+
+def make_report(cfg, samples, report_id, created_at, state='running', current_case=None, elapsed_ms=0, stop_reason=None):
     protocol = resolve_protocol(cfg['protocol'],cfg['base_url'],cfg['model'])
-    samples=[]
-    suite = cases_for(cfg['mode'],cfg.get('distill',False))
-    for i,case in enumerate(suite):
-        result = await run_one(cfg,protocol,case)
-        samples.append(result)
-        if update: await update(i+1,len(suite),result)
-        # Stop if authentication failed; other failures are useful independent evidence.
-        if i == 0 and result['status']=='error' and ('HTTP 401' in result['note'] or 'HTTP 403' in result['note']):
-            break
-    successful = [x for x in samples if x['status'] in ('pass','sample')]
-    errors = [x for x in samples if x['status'] == 'error']
-    ttft = [x['ttft_ms'] for x in samples if x['ttft_ms'] is not None]
-    total = {k:sum((x.get('usage') or {}).get(k,0) or 0 for x in samples) for k in ('input_tokens','output_tokens','cache_read_tokens','cache_write_tokens','reasoning_tokens')}
-    total['reported_requests'] = sum(bool((x.get('usage') or {}).get('reported')) for x in samples)
+    plan = [case_spec(c) for c in cases_for(cfg['mode'],cfg.get('distill',False))]
+    coverage = {k:sum(x.get('usage',{}).get(k) is not None for x in samples) for k in USAGE_FIELDS}
+    totals = {k:sum(x['usage'][k] for x in samples if x.get('usage',{}).get(k) is not None) if coverage[k] else None for k in USAGE_FIELDS}
+    totals['coverage'] = coverage
+    totals['reported_requests'] = sum(bool(x.get('usage',{}).get('reported')) for x in samples)
+    complete_usage = bool(samples) and all(x.get('usage',{}).get('complete') for x in samples)
+    estimate = estimate_cost(totals,cfg.get('rates')) if complete_usage else None
+    ttft = [x['ttft_ms'] for x in samples if x.get('ttft_ms') is not None and x['status'] != 'error']
+    measured = [x for x in samples if x.get('tps') is not None]
+    duration = sum(x['latency_ms'] for x in measured)/1000
+    counts = {k:sum(x['status'] == k for x in samples) for k in ('pass','warn','error','sample')}
     sections = build_sections(samples,protocol,cfg['model'],cfg.get('distill',False))
-    estimate = estimate_cost(total,cfg.get('rates')) if total['reported_requests']==len(samples) else None
-    status='attention' if errors or any(x['status']=='attention' for x in sections) else 'pass'
-    return {'id':uuid.uuid4().hex[:14],'created_at':datetime.now(timezone.utc).isoformat(),
-        'label':cfg.get('label','')[:100], 'base_host':httpx.URL(cfg['base_url']).host,'model':cfg['model'],
-        'mode':cfg['mode'],'protocol':protocol,'status':status,'samples':samples,'sections':sections,
-        'stats':{'requests':len(samples),'successful':len(successful),'errors':len(errors),
-                 'avg_ms':round(statistics.mean(x['latency_ms'] for x in samples)) if samples else None,
-                 'ttft_ms':round(statistics.mean(ttft)) if ttft else None,
-                 'usage':total,'estimated_cost_usd':estimate,'cost_basis':('用户填写的单价及倍率，按供应商 Usage 计算' if estimate is not None else '无完整用量或未设置单价，无法估算')},
-        'disclaimers':['行为指纹样本不足以证明模型身份或上游来源','供应商 Usage 不是独立计费证明；需核对账单或余额','小样本性能不代表持续 SLA','训练数据用途需取得上游和中转商授权']}
+    abnormal = counts['warn'] + counts['error']
+    status = 'running' if state == 'running' else 'attention' if abnormal or state != 'completed' else 'pass'
+    report = {'schema_version':2,'id':report_id,'created_at':created_at,'model':cfg['model'],
+              'label':cfg.get('label',''),'base_host':httpx.URL(cfg['base_url']).host,'mode':cfg['mode'],'protocol':protocol,
+              'run_state':state,'status':status,'current_case':current_case,'plan':plan,'samples':samples,'sections':sections,
+              'stop_reason':stop_reason, 'elapsed_ms':round(elapsed_ms),
+              'settings':{'reasoning':cfg.get('reasoning','auto'),'reasoning_scope':'reasoning_case',
+                          'reasoning_scheduled':any(c['kind']=='reasoning' for c in plan),
+                          'billing_multiplier':cfg.get('billing_multiplier') if cfg.get('billing_multiplier') is not None else (cfg.get('rates') or {}).get('group_ratio',1)},
+              'stats':{'requests':len(samples),'planned':len(plan),'counts':counts,
+                       'unexecuted':len(plan)-len(samples),'successful':counts['pass'],'errors':counts['error'],
+                       'avg_ms':round(statistics.mean(x['latency_ms'] for x in samples),2) if samples else None,
+                       'ttft_ms':round(statistics.mean(ttft),2) if ttft else None,'ttft_samples':len(ttft),
+                       'tps':round(sum(x['usage']['output_tokens'] for x in measured)/duration,2) if duration>0 else None,
+                       'tps_samples':len(measured),'usage':totals,'estimated_cost_usd':estimate,
+                       'cost_basis':'按自填单价及供应商上报用量估算；未上报的缓存量不单独计价。' if estimate is not None else '缺少完整用量或单价，无法估算。'},
+              'disclaimers':['行为样本和返回模型 ID 不证明真实模型身份或上游来源。',
+                             'Token 用量来自供应商上报；估算费用不等于实际账单。',
+                             'TTFT 为本服务器请求开始至首段正文到达，推理片段单独记录；非流式请求不测 TTFT。',
+                             'TPS 为上报输出 Token / 请求总秒数（含等待），可能包含推理 Token；汇总按有效请求总用量 / 总耗时计算。',
+                             '小样本性能不代表长期 SLA；未记录的字段显示为未知。']}
+    if state != 'running':
+        report['finished_at'] = datetime.now(timezone.utc).isoformat()
+    return redact(report,[cfg['key'], *cfg.get('custom_headers',{}).values()])
+
+
+async def run_suite(cfg: dict, update=None, report_id=None, created_at=None) -> dict:
+    report_id = report_id or uuid.uuid4().hex[:14]
+    created_at = created_at or datetime.now(timezone.utc).isoformat()
+    protocol = resolve_protocol(cfg['protocol'],cfg['base_url'],cfg['model'])
+    start, samples, stop_reason = time.perf_counter(), [], None
+    for case in cases_for(cfg['mode'],cfg.get('distill',False)):
+        if update:
+            await update(make_report(cfg,samples,report_id,created_at,current_case=case[0],elapsed_ms=(time.perf_counter()-start)*1000))
+        # Bound whole-case duration as well as individual network reads.
+        try:
+            result = await asyncio.wait_for(run_one(cfg,protocol,case),timeout=CASE_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            result = {**case_spec(case),'status':'error','note':f'单项检测超过 {CASE_TIMEOUT_SECONDS} 秒，已停止该请求。',
+                      'latency_ms':CASE_TIMEOUT_SECONDS*1000,'ttft_ms':None,'tps':None,'usage':normalize_usage({},protocol),
+                      'text':'','model_returned':None,'thinking_observed':False,'tool_observed':False}
+        samples.append(result)
+        if update:
+            await update(make_report(cfg,samples,report_id,created_at,elapsed_ms=(time.perf_counter()-start)*1000))
+        if len(samples)==1 and result.get('http_status') in (401,403):
+            stop_reason = '首项鉴权失败，剩余项目未执行。'
+            break
+    return make_report(cfg,samples,report_id,created_at,state='completed',elapsed_ms=(time.perf_counter()-start)*1000,stop_reason=stop_reason)

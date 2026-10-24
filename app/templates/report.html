@@ -1,0 +1,53 @@
+{% macro help(text) -%}<span class="help"><button type="button" class="help-trigger" aria-label="查看指标说明" aria-expanded="false">?</button><span class="help-content" role="tooltip">{{ text }}</span></span>{%- endmacro %}
+<article class="report" data-report-id="{{ report.data.id }}" data-state="{{ report.state }}">
+  <header class="report-header">
+    <div class="report-heading"><h2>{{ report.title }}</h2><strong class="report-model">{{ report.data.label or report.data.base_host }} · {{ report.data.model }}</strong>
+      <p class="report-meta">{{ report.mode }} · {{ report.protocol }} · {{ report.created_at }} <span class="report-id">ID: {{ report.data.id }}</span></p></div>
+    {% if interactive and report.state != 'running' %}<button type="button" class="btn btn-primary" data-download-pdf="{{ report.data.id }}">下载 PDF ↓</button>{% endif %}
+  </header>
+  <div class="report-conclusion {{ 'has-issues' if report.issues else '' }}">
+    <div class="conclusion-line"><strong>{{ report.summary }}</strong>{% if report.state == 'running' %}<span data-live-elapsed="{{ report.data.created_at }}">计时中</span>{% endif %}</div>
+    {% if report.state == 'running' %}<progress class="run-progress" value="{{ report.data.samples|length }}" max="{{ report.cases|length or 1 }}" aria-label="已完成检测项数">{{ report.data.samples|length }}/{{ report.cases|length }}</progress>{% endif %}
+    <div class="result-line"><span>{{ report.result_line }}</span>
+      {% if report.state == 'running' and interactive %}{{ help('进度按已完成项目数计算，不代表剩余时间。单项计时表示已运行时间；刷新会恢复同一次检测。') }}{% endif %}
+    </div>
+    {% if report.data.stop_reason %}<p>{{ report.data.stop_reason }}</p>{% endif %}
+  </div>
+  {% if report.legacy %}<p class="report-notice">旧版报告：缺失的测试题、规则与指标显示“未记录”，无法补回。</p>{% endif %}
+  <div class="report-metrics">{% for metric in report.metrics %}<div><span>{{ metric.label }} {% if interactive %}{{ help(metric.hint) }}{% endif %}</span><strong>{{ metric.value if metric.value not in ('未记录','未采集','未核算') else '—' }}</strong>{% if not interactive %}<small>{{ metric.hint }}</small>{% endif %}</div>{% endfor %}</div>
+  <div class="usage-strip">{% for item in report.usage %}<span title="{{ item.coverage }} · {{ item.value }}">{{ item.label }} <strong>{{ item.value if item.value != '未上报' else '—' }}</strong></span>{% endfor %}</div>
+  {% if report.data.settings %}<div class="run-settings-note">计费倍率 {{ report.data.settings.billing_multiplier }}× · 思考专项：{{ report.reasoning_label }}{% if not report.data.settings.reasoning_scheduled %}（本档未执行）{% endif %}</div>{% endif %}
+  {% if not interactive %}<section class="print-overview" aria-label="检测结果摘要"><div class="case-table-head"><span>检测项</span><span>状态</span><span>耗时</span><span>TTFT</span><span>TPS</span><span>输入 / 输出 Token</span><span></span></div>
+    {% for case in report.cases %}<div class="print-result-row"><span>{{ '%02d'|format(case.number) }} {{ case.title }}</span><span>{{ case.status_label }}</span><span>{{ duration(case.latency_ms) if case.latency_ms is defined and case.latency_ms is not none else '—' }}</span><span>{{ duration(case.ttft_ms) if case.ttft_ms is defined and case.ttft_ms is not none else '—' }}</span><span>{{ number(case.tps) if case.tps is defined and case.tps is not none else '—' }}</span><span>{{ number(case.usage.input_tokens,0) if case.usage is defined and case.usage.input_tokens is defined and case.usage.input_tokens is not none else '—' }} / {{ number(case.usage.output_tokens,0) if case.usage is defined and case.usage.output_tokens is defined and case.usage.output_tokens is not none else '—' }}</span><span></span></div>{% endfor %}
+    <h3 class="print-evidence-title">逐项证据</h3></section>{% endif %}
+  <section class="case-evidence" aria-label="逐项检测结果与依据">
+    <div class="case-table-head" aria-hidden="true"><span>检测项{% if interactive %} · 点击展开依据{% endif %}</span><span>状态</span><span>耗时</span><span>TTFT</span><span title="缺少上报输出用量或完整响应时无法计算">TPS</span><span>输入 / 输出 Token</span><span></span></div>
+    {% for case in report.cases %}<details class="evidence-case" id="{{ case.anchor }}" data-case-status="{{ case.status }}" {% if not interactive %}open{% endif %}>
+      <summary>
+        <span class="case-name"><span class="case-number">{{ '%02d'|format(case.number) }}</span><strong>{{ case.title }}</strong>{% if case.status in ('warn','error') %}<small class="case-inline-note" title="{{ case.note }}">{{ case.note }}</small>{% endif %}</span>
+        <span class="case-state"><span class="status-pill {{ case.status }}">{% if case.status == 'running' %}<i class="activity-dot" aria-hidden="true"></i>{% endif %}{{ case.status_label }}</span></span>
+        <span class="case-duration" data-label="耗时">{% if case.status == 'running' %}<span data-case-elapsed="{{ report.data.created_at }}" data-case-offset="{{ report.data.elapsed_ms or 0 }}">计时中</span>{% else %}{{ duration(case.latency_ms) if case.latency_ms is defined and case.latency_ms is not none else '—' }}{% endif %}</span>
+        <span class="case-ttft" data-label="TTFT">{{ duration(case.ttft_ms) if case.ttft_ms is defined and case.ttft_ms is not none else '—' }}</span>
+        <span class="case-tps" data-label="TPS">{{ number(case.tps) if case.tps is defined and case.tps is not none else '—' }}</span>
+        <span class="case-tokens" data-label="输入 / 输出">{{ number(case.usage.input_tokens,0) if case.usage is defined and case.usage.input_tokens is defined and case.usage.input_tokens is not none else '—' }} / {{ number(case.usage.output_tokens,0) if case.usage is defined and case.usage.output_tokens is defined and case.usage.output_tokens is not none else '—' }}</span>
+        <span class="case-chevron" aria-hidden="true"></span>
+      </summary>
+      <div class="evidence-body"><p class="case-verdict">{{ case.note or '未记录判定说明' }}</p>
+        <div class="evidence-grid"><section><h4>测试题</h4><pre>{{ case.prompt or '旧报告未记录' }}</pre></section><section><h4>预期与判定规则</h4><pre>{{ case.expected or '旧报告未记录' }}</pre>{% if case.expected_tool_json %}<pre>{{ case.expected_tool_json }}</pre>{% endif %}</section></div>
+        {% if case.status not in ('pending','running','skipped') %}
+        <section><h4>实际响应</h4><pre>{{ case.text or '未返回正文；工具调用见下方（如有）。' }}</pre>{% if case.text_truncated %}<p class="report-notice">响应超出证据长度上限，以上为截取内容。</p>{% endif %}</section>
+        {% if case.tool_json %}<section><h4>工具调用结构</h4><pre>{{ case.tool_json }}</pre>{% if case.tool_calls_truncated %}<p class="report-notice">工具调用已截取前 8 项。</p>{% endif %}</section>{% endif %}
+        {% if case.kind == 'reasoning' or case.thinking_observed %}<section><h4>接口公开返回的推理文本 / 摘要</h4><pre>{{ case.reasoning_text or '未提供可展示文本；可能仅返回推理用量或不可读字段。' }}</pre>{% if case.reasoning_truncated %}<p class="report-notice">推理文本超出长度上限，以上为截取内容。</p>{% endif %}</section>{% endif %}
+        {% if case.stream %}<div class="stream-evidence">正文：{{ '已收到' if case.stream.content_received else '未收到' }} · 结束标记：{{ '已收到' if case.stream.completed else '未收到' }} · Usage：{{ '已收到' if case.stream.usage_received else '未收到' }} · 无法解析事件：{{ case.stream.invalid_events }}</div>{% endif %}
+        <details class="technical-evidence" data-detail-key="{{ case.anchor }}-technical" {% if not interactive %}open{% endif %}><summary>请求参数与指标明细</summary><div>
+          <dl class="evidence-stats"><div><dt>返回模型 ID</dt><dd>{{ case.model_returned or '未提供' }}</dd></div><div><dt>HTTP 状态</dt><dd>{{ case.http_status or '未记录' }}</dd></div><div><dt>首段推理到达</dt><dd>{{ duration(case.reasoning_ttft_ms) if case.reasoning_ttft_ms is defined else '未记录' }}</dd></div><div><dt>结束原因</dt><dd>{{ case.finish_reason or '未提供' }}</dd></div>{% for label,value in case.usage_rows %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
+          {% if case.request_json %}<section class="request-evidence"><h4>请求配置（不含密钥和自定义 Header）</h4><pre>{{ case.request_json if interactive else case.request_json_compact }}</pre></section>{% endif %}
+        </div></details>
+        {% endif %}
+      </div>
+    </details>{% endfor %}
+  </section>
+  <details class="report-limits" {% if not interactive %}open{% endif %}><summary>指标口径与报告限制</summary><ul>{% for line in report.data.disclaimers %}<li>{{ line }}</li>{% endfor %}</ul><p>{{ report.data.stats.cost_basis }}</p></details>
+  {% if interactive and report.state != 'running' %}<div class="report-actions"><button class="btn btn-light" data-export-json="{{ report.data.id }}" type="button">导出 JSON</button><button class="btn btn-light" data-copy-id="{{ report.data.id }}" type="button">复制报告 ID</button><details class="reconcile"><summary>核对实际扣费</summary><div><label>账单 USD <input type="number" min="0" step="any" data-reconcile-cost="{{ report.data.stats.estimated_cost_usd if report.data.stats.estimated_cost_usd is not none else '' }}" placeholder="实际扣费"></label><small>仅当前页面对比，不读取或保存账单。</small></div></details></div>{% endif %}
+  <p class="report-feedback" role="status" aria-live="polite"></p>
+</article>

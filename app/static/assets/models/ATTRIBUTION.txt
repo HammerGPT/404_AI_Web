@@ -1,0 +1,5 @@
+Brand icons: gilbarbara/logos via Iconify icon-sets (CC0-1.0).
+Source: https://github.com/iconify/icon-sets/blob/master/json/logos.json
+License: https://github.com/gilbarbara/logos/blob/master/LICENSE.txt
+Downloaded 2026-10-24. Brand marks identify models; no affiliation is implied.
+custom.svg is project-authored.
