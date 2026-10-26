@@ -96,3 +96,10 @@ docker compose -f compose.nginx.yaml exec app python -m app.auth reset-password
 新增 `fingerprint_baselines`，不改动原业务表结构。更新前确认无活动检测；一致性数据库及 `1278704` 源码快照位于 `/root/backups/404-ai-web/pre-fingerprint-20261024/`，原镜像 `ai404-web:before-fingerprint-20261024`。回滚保留新表及报告卷，不回滚账户哈希。
 
 本次 104 项单元测试和隔离浏览器 396 次假上游请求通过；PDF、基线管理、手机界面通过。线上 HTTPS、已有会话跨重启、原有 4 份报告及业务数据哈希通过，无真实 API 调用。上线基线库为空，用户需自行从可信接口采集，不能把测试数据库或社区样本拷入生产充当官方基线。
+
+
+## 轻量指纹与判定修订上线（2026-10-26）
+
+用户确认后，合并发布 `9939ccd`、`fbe6d8b`。实际镜像 `ai404-web:local` 指向 SHA-256 `65e85c61b2ca977b468dedc682ca9d5bcd1608bd2879e522b267c857f0707a21`，候选别名 `ai404-web:verdict-candidate` 保留。复用已验收镜像，无数据库迁移。
+
+备份 `/root/backups/404-ai-web/pre-screening-release-20261026/` 包含一致性 SQLite、业务表哈希、7475908 源码与 Compose、上线截图。上一版镜像 `ai404-web:before-screening-20261026`。原 6 份报告及业务配置哈希一致、会话跨重启有效；HTTPS、指纹勾选及手机布局验证通过，无真实 API 调用。旧报告不重判，新检测采用修正规则。
