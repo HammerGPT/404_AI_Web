@@ -77,6 +77,15 @@ async def main():
         await expect(page.locator('#reasoning')).to_be_disabled()
         await page.locator('.mode-option:has(input[value="standard"])').click()
         await expect(page.locator('#reasoning')).to_be_enabled()
+        await expect(page.locator('#identityEnabled')).to_be_checked()
+        await expect(page.locator('#identityNote')).to_contain_text('11 次请求')
+        await page.locator('#identityEnabled').uncheck()
+        await expect(page.locator('#identityNote')).to_contain_text('8 次请求')
+        await page.locator('.mode-option:has(input[value="deep"])').click()
+        await expect(page.locator('#identityEnabled')).not_to_be_checked()
+        await expect(page.locator('#identityNote')).to_contain_text('16 次请求')
+        await page.locator('.mode-option:has(input[value="standard"])').click()
+        await page.locator('#identityEnabled').check()
         await page.locator('#baseUrl').fill('https://example.com/v1')
         await page.locator('#apiKey').fill('FAKE_BROWSER_KEY')
         await page.locator('#runBtn').click()
@@ -97,10 +106,12 @@ async def main():
         assert report['identity']['status']=='pass',report['identity']
         assert report['identity']['reference']['models']==63
         await expect(page.locator('#runReport .identity-result')).to_contain_text('与声明模型基本一致')
-        assert report['stats']['counts']=={'pass':11,'warn':0,'error':0,'sample':0},report['stats']['counts']
+        assert report['stats']['counts']=={'pass':11,'warn':0,'error':0,'sample':0,'limited':0},report['stats']['counts']
         assert report['stats']['ttft_samples']==1 and report['stats']['tps_samples']==11
         assert report['settings']['billing_multiplier']==2.5 and report['stats']['estimated_cost_usd'] is None
-        assert report['settings']['reasoning']=='high'
+        assert report['settings']['reasoning']=='high' and report['settings']['identity_enabled'] is True
+        tool=next(s for s in report['samples'] if s['kind']=='tool')
+        assert tool['request']['parameters']['tool_choice']=='auto'
         reasoning=next(s for s in report['samples'] if s['kind']=='reasoning')
         assert reasoning['request']['parameters']['reasoning']['effort']=='high'
         assert all('reasoning' not in s['request']['parameters'] for s in report['samples'] if s['kind']!='reasoning')
@@ -140,6 +151,29 @@ async def main():
         assert catalog['billing']=={'options':[0.5,1,2,2.5],'default':2.5}
         preset=next(m for m in catalog['models'] if m['model_id']=='claude-haiku-4-5')
         assert preset['reasoning_default']=='high' and preset['reasoning_options']==['auto','low','high']
+        await page.locator('#navTest').click()
+        await page.locator('#newTest').click()
+        await page.locator('.mode-option:has(input[value="quick"])').click()
+        await page.locator('#identityEnabled').uncheck()
+        await page.locator('#baseUrl').fill('https://budget.example.com/v1')
+        await page.locator('#apiKey').fill('FAKE_BROWSER_KEY')
+        await page.locator('#runBtn').click()
+        await expect(page.locator('#runReport .report')).not_to_have_attribute('data-report-id',report_id)
+        await expect(page.locator('#runReport .report')).to_have_attribute('data-state','completed',timeout=30000)
+        disabled_id=await page.locator('#runReport .report').get_attribute('data-report-id')
+        disabled_report=await (await context.request.get('http://127.0.0.1:8000/api/reports/'+disabled_id)).json()
+        assert disabled_report['stats']['requests']==4 and 'identity' not in disabled_report
+        assert disabled_report['settings']['identity_enabled'] is False
+        assert disabled_report['stats']['counts']['limited']==1
+        assert disabled_report['stats']['counts']['warn']==0
+        await expect(page.locator('#runReport .status-pill.limited')).to_have_text('预算受限')
+        await page.locator('#runReport .evidence-case[data-case-status="limited"] > summary').click()
+        await expect(page.locator('#runReport .case-impact')).to_contain_text('不等于渠道或客户端不可用')
+        await page.screenshot(path='/testdata/budget-report.png',full_page=True)
+        async with page.expect_download(timeout=60000) as pending:
+            await page.locator('#runReport [data-download-pdf]').click()
+        await (await pending.value).save_as('/testdata/budget-report.pdf')
+        assert (await (await context.request.get('http://127.0.0.1:8000/__test__/calls')).json())['count']==15
         assert not errors,errors
         Path('/testdata/report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
         await browser.close()

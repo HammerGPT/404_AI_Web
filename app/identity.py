@@ -18,6 +18,13 @@ OUTPUT_LIMIT = 2048
 DEFAULT_CHALLENGES = generate_challenges(3)
 
 
+def enabled(cfg):
+    if cfg['mode'] == 'fingerprint':
+        return False
+    selected = cfg.get('identity_enabled')
+    return cfg['mode'] in ('standard', 'deep') if selected is None else selected
+
+
 def canonical(model):
     # Separator aliases only; never infer an unknown version from a family prefix.
     return re.sub(r'[^a-z0-9]', '', model.lower().rsplit('/', 1)[-1])
@@ -64,7 +71,7 @@ def grade(item):
 
 
 def analyze(cfg, samples, state):
-    if cfg['mode'] not in ('standard', 'deep'):
+    if not enabled(cfg):
         return None
     result = {'status': 'running' if state == 'running' else 'unknown',
               'title': '模型身份初筛中' if state == 'running' else '证据不足',

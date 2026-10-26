@@ -212,3 +212,4 @@ input:focus,select:focus,textarea:focus{border-color:#58a99d!important;box-shado
 @media(max-width:900px) and (min-width:631px){.brand-logo-sidebar{display:none}
 .sidebar .brand{width:100%;height:56px;background:url('/static/assets/favicon-64.png') center top/42px 42px no-repeat}
 }
+.identity-option{display:flex;align-items:center;gap:8px;margin-top:10px}.identity-option .checkbox-line{margin:0}.identity-option+.field-tip{margin-top:5px}

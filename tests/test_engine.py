@@ -51,7 +51,7 @@ def test_build_payload():
     p=build_payload('openai_chat','gpt-6','connect','a',80)
     assert 'max_completion_tokens' in p
     p=build_payload('openai_responses','gpt-6','tool','a',80)
-    assert p['tool_choice']['name']=='convert_length'
+    assert p['tool_choice']=='auto'
 
 
 def test_parse_openai():

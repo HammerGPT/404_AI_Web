@@ -58,7 +58,7 @@ def build_payload(protocol: str, model: str, kind: str, prompt: str, token_max: 
             payload['stream_options'] = {'include_usage': True}
         if kind in ('tool', 'tool2'):
             payload['tools'] = [{'type': 'function', 'function': TOOL}]
-            payload['tool_choice'] = {'type': 'function', 'function': {'name': 'convert_length'}}
+            payload['tool_choice'] = 'auto'
         if kind == 'reasoning' and reasoning in ('low','medium','high','on'):
             payload['reasoning_effort'] = 'low' if reasoning=='on' else reasoning
         return payload
@@ -68,7 +68,7 @@ def build_payload(protocol: str, model: str, kind: str, prompt: str, token_max: 
             payload['stream'] = True
         if kind in ('tool', 'tool2'):
             payload['tools'] = [{'type': 'function', **TOOL}]
-            payload['tool_choice'] = {'type': 'function', 'name': 'convert_length'}
+            payload['tool_choice'] = 'auto'
         if kind == 'reasoning' and reasoning in ('low','medium','high','on'):
             payload['reasoning'] = {'effort': 'low' if reasoning=='on' else reasoning, 'summary': 'auto'}
         return payload
@@ -78,7 +78,7 @@ def build_payload(protocol: str, model: str, kind: str, prompt: str, token_max: 
             payload['stream'] = True
         if kind in ('tool', 'tool2'):
             payload['tools'] = [{'name': TOOL['name'], 'description': TOOL['description'], 'input_schema': TOOL['parameters']}]
-            payload['tool_choice'] = {'type': 'tool', 'name': 'convert_length'}
+            payload['tool_choice'] = {'type': 'auto'}
         if kind == 'reasoning' and reasoning in ('on','adaptive','low','medium','high'):
             payload['thinking'] = {'type': 'adaptive'}
             if reasoning in ('low','medium','high'):
@@ -89,7 +89,7 @@ def build_payload(protocol: str, model: str, kind: str, prompt: str, token_max: 
                    'generationConfig': {'maxOutputTokens': token_max}}
         if kind in ('tool', 'tool2'):
             payload['tools'] = [{'functionDeclarations': [{'name': TOOL['name'], 'description': TOOL['description'], 'parameters': TOOL['parameters']}]}]
-            payload['toolConfig'] = {'functionCallingConfig': {'mode': 'ANY', 'allowedFunctionNames': ['convert_length']}}
+            payload['toolConfig'] = {'functionCallingConfig': {'mode': 'AUTO'}}
         if kind == 'reasoning' and reasoning in ('low','medium','high','on'):
             payload['generationConfig']['thinkingConfig'] = {'includeThoughts': True}
             if reasoning != 'on':
@@ -209,7 +209,17 @@ class StreamResult:
 
     def _event(self, ev, elapsed):
         piece, thought = '', ''
-        if ev.get('error') or ev.get('type') in ('error','response.failed','response.incomplete'):
+        if self.protocol == 'openai_responses' and ev.get('type') == 'response.incomplete':
+            response = ev.get('response') or {}
+            if not ev.get('error') and (response.get('incomplete_details') or {}).get('reason') == 'max_output_tokens':
+                self.finish = 'max_output_tokens'
+                self.complete = True
+                self.usage.update(response.get('usage') or {})
+                self.model = response.get('model') or self.model
+            else:
+                self.error = True
+            return
+        if ev.get('error') or ev.get('type') in ('error','response.failed'):
             self.error = True
             return
         if self.protocol == 'openai_chat':

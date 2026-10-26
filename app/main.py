@@ -21,7 +21,7 @@ from . import store, auth, fingerprints, identity
 from .catalog import PROTOCOLS, BRANDS, REASONING_LABELS, metadata, validate_reasoning_profile
 from .reports import render_report, pdf_renderer
 from .runs import manager, BusyError
-from .engine import resolve_protocol, request_headers
+from .engine import cases_for, resolve_protocol, request_headers
 from .security import validate_target, api_path, pinned_request, TargetError
 
 APP_DIR = Path(__file__).parent
@@ -215,6 +215,7 @@ class Config(BaseModel):
     fingerprint_name: str = Field(default='',max_length=100)
     fingerprint_source: str = 'trusted'
     fingerprint_trusted: bool = False
+    identity_enabled: bool | None = None
 
     @field_validator('fingerprint_action')
     @classmethod
@@ -360,7 +361,7 @@ async def model_catalog(session=Depends(get_session)):
 async def fingerprint_catalog(session=Depends(get_session)):
     fields=('id','name','model','protocol','source_host','source_kind','created_at','report_id','enabled')
     references=[{k:r[k] for k in fields} for r in store.list_fingerprint_baselines()]
-    return {**fingerprints.catalog(),'references':references,'screening':identity.metadata()}
+    return {**fingerprints.catalog(),'references':references,'screening':identity.metadata(),'base_requests':{m:len(cases_for(m,identity_enabled=False)) for m in ('quick','standard','deep')}}
 
 
 @app.get('/api/fingerprints/{reference_id}')

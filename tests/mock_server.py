@@ -94,6 +94,8 @@ async def stream(url,headers,payload,**kwargs):
     else:
         events=[{'model':payload['model'],'choices':[{'delta':{'content':'这是模拟流式正文。'}}]},
                 {'usage':{'prompt_tokens':20,'completion_tokens':24}}, '[DONE]']
+    if 'budget.example.com' in url and 'input' in payload:
+        events[-1]={'type':'response.incomplete','response':{'model':payload['model'],'incomplete_details':{'reason':'max_output_tokens'},'usage':{'input_tokens':20,'output_tokens':280}}}
     for ev in events:
         await asyncio.sleep(.35)
         yield ('line',time.perf_counter()-start,'data: '+(ev if isinstance(ev,str) else json.dumps(ev,ensure_ascii=False)))

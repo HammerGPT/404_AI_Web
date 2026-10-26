@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 import statistics
 import time
 import uuid
+import unicodedata
 from datetime import datetime, timezone
 import httpx
 from .adapters import TOOL, TEXT_LIMIT, StreamResult, build_payload, normalize_usage, parse_result
@@ -34,10 +36,10 @@ CASES = [
 DISTILL = ('structured_sample', '授权数据生成样例', '生成一条关于基础数学的原创训练问答，严格输出 JSON，字段为 instruction、input、output、explanation，内容简短。', 200)
 
 
-def cases_for(mode: str, distill: bool = False, challenges=None):
+def cases_for(mode: str, distill: bool = False, challenges=None, identity_enabled=None):
     if mode=='fingerprint':return fingerprints.cases()
     n = {'quick': 4, 'standard': 8, 'deep': 16}[mode]
-    cases = CASES[:n] + (identity.cases(challenges) if mode in ('standard','deep') else [])
+    cases = CASES[:n] + (identity.cases(challenges) if identity.enabled({'mode':mode,'identity_enabled':identity_enabled}) else [])
     return cases + ([DISTILL] if distill and mode != 'quick' else [])
 
 
@@ -52,7 +54,7 @@ RULES = {
     'extract_value': '正文应为 29。',
     'json': '正文可直接解析为 JSON，字段及值符合要求。',
     'stream': '收到正文、协议结束标记及可解析事件；另外记录 Usage 是否完整。',
-    'tool': '仅调用指定函数，函数名及参数与题目要求一致；不实际执行工具。',
+    'tool': '自动工具选择，由提示词要求调用指定函数；检查函数名和参数。不执行工具或验证完整工具往返。',
     'reasoning': '计算答案应为 7 支笔；公开推理字段另行记录，不能据此认证模型身份。',
     'instruction': '仅输出 RED、GREEN、BLUE 三行。',
     'logic': '严格回答“不能”。',
@@ -61,6 +63,7 @@ RULES = {
 }
 USAGE_FIELDS = ('input_tokens','output_tokens','cache_read_tokens','cache_write_tokens','reasoning_tokens')
 CASE_TIMEOUT_SECONDS = 90
+OUTPUT_LIMIT_REASONS = ('length','max_tokens','MAX_TOKENS','max_output_tokens')
 
 
 def case_spec(case):
@@ -102,6 +105,27 @@ def estimate_cost(totals: dict, rates: dict | None) -> float | None:
     return round(price*rates.get('group_ratio',1),8)
 
 
+def correct_pen_answer(text):
+    """Read the last stated quantity, not any occurrence of 7 in the working."""
+    value = unicodedata.normalize('NFKC', text)
+    value = re.sub(r'[*_`#]', '', value).strip()
+    quantities = list(re.finditer(r'(?<![\d.])([+-]?\d+(?:\.\d+)?|[零〇一二三四五六七八九十百]+)\s*(?:支(?:笔)?|pens?\b)', value, re.I))
+    if quantities:
+        answer = quantities[-1]
+        if re.search(r'(?:不是|并非|不等于|不剩|不为)\s*$', value[:answer.start()]):
+            return False
+        if re.match(r'\s*(?:不对|不正确|是错的)', value[answer.end():]):
+            return False
+        # An explicit final correction overrides a preceding quantity.
+        correction = re.search(r'(?:(?:答案|结果)(?:是|为)?|应为|应该是|而是)\s*[:：]?\s*([+-]?\d+(?:\.\d+)?|[零一二三四五六七八九十]+)\s*[。.!！]?$', value[answer.end():])
+        number = correction.group(1) if correction else answer.group(1)
+    else:
+        final = re.search(r'(?:^|[=＝:：]|答案(?:是|为)?|结果(?:是|为)?)\s*([+-]?\d+(?:\.\d+)?|七)\s*[。.!！]?$', value)
+        if not final:return False
+        number = final.group(1)
+    return number == '七' or (re.fullmatch(r'[+]?\d+(?:\.\d+)?', number) is not None and float(number) == 7)
+
+
 def check_assertion(kind: str, text: str, tool=False) -> tuple[str,str]:
     value = text.strip()
     if kind == 'connect':
@@ -110,9 +134,8 @@ def check_assertion(kind: str, text: str, tool=False) -> tuple[str,str]:
         ok=len(value)==1 and value in '0123456789'
         return ('pass' if ok else 'warn','符合单字符格式要求；不代表模型身份验证。' if ok else '未按要求只输出一位数字。')
     if kind=='reasoning':
-        normalized=value.strip('。.!！').replace(' ','')
-        ok=normalized in ('7','7支','7支笔','剩7支笔','剩下7支笔','还剩7支笔','七','七支笔')
-        return ('pass' if ok else 'warn','答案为 7，计算检查通过；公开推理证据见明细。' if ok else '预期为 7 支笔，实际答案或格式未符合要求。')
+        ok=correct_pen_answer(value)
+        return ('pass' if ok else 'warn','最终答案为 7，计算检查通过；允许简短计算过程及 Markdown。' if ok else '未能确认最终答案为 7 支笔，请核查实际回答；不据此判断渠道连通性。')
     if kind in ('exact_word','arithmetic','array_order','extract_value'):
         expected={'exact_word':'READY','arithmetic':'129','array_order':[1,3,5,8],'extract_value':'29'}[kind]
         try:ok=json.loads(value)==expected if kind=='array_order' else value==expected
@@ -190,6 +213,7 @@ async def run_one(cfg: dict, protocol: str, case: tuple) -> dict:
                 if stream.error:
                     item['note'] = '上游返回流式错误事件，正文已隐藏'
                 else:
+                    item['protocol_status'] = 'pass' if stream.complete and stream.invalid_events == 0 and stream.events > 0 else 'fail'
                     checks = [('正文',bool(stream.text)),('结束标记',stream.complete),('事件结构',stream.invalid_events == 0 and stream.events > 0),
                               ('输入/输出用量',item['usage']['complete'])]
                     item['status'] = 'pass' if all(ok for _,ok in checks) else 'warn'
@@ -204,9 +228,10 @@ async def run_one(cfg: dict, protocol: str, case: tuple) -> dict:
                 item['status'],item['note'] = identity.grade(item) if kind.startswith('identity_') else fingerprints.grade(kind,item) if kind in fingerprints.BY_KIND else check_assertion(kind,item['text'],item['tool_calls'])
                 for call in item['tool_calls']:
                     call['arguments'] = redact(call['arguments'],secrets,keys=True)
-        if item.get('finish_reason') in ('length','max_tokens','MAX_TOKENS','incomplete') and item['status'] != 'error' and not kind.startswith('fp_token_'):
-            item['status'] = 'warn'
-            item['note'] += '；达到输出上限，内容可能不完整'
+        if item.get('finish_reason') in OUTPUT_LIMIT_REASONS and item['status'] != 'error' and not kind.startswith('fp_token_'):
+            item['output_limited'] = True
+            item['status'] = 'limited' if streaming and item.get('protocol_status') == 'pass' else 'warn'
+            item['note'] += '；达到本次设置的输出上限，回答截断；不自动补发请求'
     except (httpx.HTTPError,TargetError,asyncio.TimeoutError) as error:
         item['note'] = f'请求失败：{type(error).__name__}'
     except (ValueError,TypeError,IndexError,KeyError,AttributeError):
@@ -254,7 +279,7 @@ def build_sections(samples: list, protocol: str, model: str, distill_requested: 
 
 def make_report(cfg, samples, report_id, created_at, state='running', current_case=None, elapsed_ms=0, stop_reason=None):
     protocol = resolve_protocol(cfg['protocol'],cfg['base_url'],cfg['model'])
-    plan = [case_spec(c) for c in cases_for(cfg['mode'],cfg.get('distill',False),cfg.get('_identity_challenges'))]
+    plan = [case_spec(c) for c in cases_for(cfg['mode'],cfg.get('distill',False),cfg.get('_identity_challenges'),cfg.get('identity_enabled'))]
     coverage = {k:sum(x.get('usage',{}).get(k) is not None for x in samples) for k in USAGE_FIELDS}
     totals = {k:sum(x['usage'][k] for x in samples if x.get('usage',{}).get(k) is not None) if coverage[k] else None for k in USAGE_FIELDS}
     totals['coverage'] = coverage
@@ -264,15 +289,15 @@ def make_report(cfg, samples, report_id, created_at, state='running', current_ca
     ttft = [x['ttft_ms'] for x in samples if x.get('ttft_ms') is not None and x['status'] != 'error']
     measured = [x for x in samples if x.get('tps') is not None]
     duration = sum(x['latency_ms'] for x in measured)/1000
-    counts = {k:sum(x['status'] == k for x in samples) for k in ('pass','warn','error','sample')}
+    counts = {k:sum(x['status'] == k for x in samples) for k in ('pass','warn','error','sample','limited')}
     sections = build_sections(samples,protocol,cfg['model'],cfg.get('distill',False))
-    abnormal = counts['warn'] + counts['error']
+    abnormal = counts['warn'] + counts['error'] + counts['limited']
     status = 'running' if state == 'running' else 'attention' if abnormal or state != 'completed' else 'pass'
     report = {'schema_version':2,'id':report_id,'created_at':created_at,'model':cfg['model'],
               'label':cfg.get('label',''),'base_host':httpx.URL(cfg['base_url']).host,'mode':cfg['mode'],'protocol':protocol,
               'run_state':state,'status':status,'current_case':current_case,'plan':plan,'samples':samples,'sections':sections,
               'stop_reason':stop_reason, 'elapsed_ms':round(elapsed_ms),
-              'settings':{'reasoning':cfg.get('reasoning','auto'),'reasoning_scope':'reasoning_case',
+              'settings':{'identity_enabled':identity.enabled(cfg),'reasoning':cfg.get('reasoning','auto'),'reasoning_scope':'reasoning_case',
                           'reasoning_scheduled':any(c['kind']=='reasoning' for c in plan),
                           'billing_multiplier':cfg.get('billing_multiplier') if cfg.get('billing_multiplier') is not None else (cfg.get('rates') or {}).get('group_ratio',1)},
               'stats':{'requests':len(samples),'planned':len(plan),'counts':counts,
@@ -292,7 +317,7 @@ def make_report(cfg, samples, report_id, created_at, state='running', current_ca
     if cfg['mode']=='fingerprint':
         report['fingerprint']=fingerprints.analyze(cfg,samples,state)
         if report['fingerprint']['status'] in ('fail','unknown') and state!='running':report['status']='attention'
-    if cfg['mode'] in ('standard','deep'):
+    if identity.enabled(cfg):
         report['identity']=identity.analyze(cfg,samples,state)
         if state!='running' and report['identity']['status']!='pass':report['status']='attention'
         report['sections'][0]={'name':'模型身份初筛','status':report['identity']['status'],'detail':report['identity']['detail']}
@@ -303,10 +328,10 @@ async def run_suite(cfg: dict, update=None, report_id=None, created_at=None) -> 
     report_id = report_id or uuid.uuid4().hex[:14]
     created_at = created_at or datetime.now(timezone.utc).isoformat()
     protocol = resolve_protocol(cfg['protocol'],cfg['base_url'],cfg['model'])
-    if cfg['mode'] in ('standard','deep') and '_identity_challenges' not in cfg:
+    if identity.enabled(cfg) and '_identity_challenges' not in cfg:
         cfg['_identity_challenges']=identity.generate_challenges(3)
     start, samples, stop_reason = time.perf_counter(), [], None
-    for case in cases_for(cfg['mode'],cfg.get('distill',False),cfg.get('_identity_challenges')):
+    for case in cases_for(cfg['mode'],cfg.get('distill',False),cfg.get('_identity_challenges'),cfg.get('identity_enabled')):
         if update:
             await update(make_report(cfg,samples,report_id,created_at,current_case=case[0],elapsed_ms=(time.perf_counter()-start)*1000))
         # Bound whole-case duration as well as individual network reads.

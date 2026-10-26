@@ -56,7 +56,8 @@ class RunManager:
                         cfg['token_field']=reference['conditions']['token_field']
                     fingerprints.validate_reference(reference,cfg)
                     cfg['_fingerprint_reference']=reference
-            if cfg['mode'] in ('standard','deep'):
+            cfg['identity_enabled']=identity.enabled(cfg)
+            if cfg['identity_enabled']:
                 cfg['_identity_challenges']=identity.generate_challenges(3)
             report_id = uuid.uuid4().hex[:14]
             created_at = datetime.now(timezone.utc).isoformat()

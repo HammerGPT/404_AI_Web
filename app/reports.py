@@ -12,7 +12,7 @@ from .catalog import PROTOCOLS, REASONING_LABELS
 
 ROOT = Path(__file__).parent
 TEMPLATES = Environment(loader=FileSystemLoader(ROOT/'templates'),autoescape=select_autoescape(['html']))
-STATUS = {'pass':'通过','warn':'失败','error':'失败','sample':'旧版未判定','unknown':'未验证',
+STATUS = {'pass':'通过','warn':'失败','error':'失败','limited':'预算受限','sample':'旧版未判定','unknown':'未验证',
           'pending':'等待','running':'检测中','skipped':'未执行','interrupted':'已中断','attention':'需核查'}
 MODES = {'quick':'快速','standard':'标准','deep':'深度','fingerprint':'高级参考对照'}
 USAGE_LABELS = {'input_tokens':'输入 Token','output_tokens':'输出 Token','cache_read_tokens':'缓存读取',
@@ -36,6 +36,31 @@ def timestamp(value):
         return '未记录'
 
 
+def impact(item):
+    status, code, kind = item.get('status'), item.get('http_status'), item.get('kind','')
+    if status == 'limited':
+        return '流式协议正常结束；本次输出预算耗尽。未输出完的内容不作能力结论，不等于渠道或客户端不可用。'
+    if status == 'error':
+        if code in (401,403):return '本次凭证或权限被拒绝，会阻断该请求；需核对 Key、模型权限和接入配置。'
+        if code == 429:return '本次请求受限流影响；需核对当前额度/并发限制，不能据此认定持续不可用。'
+        if code == 400:return '当前请求参数被拒绝；需核对型号与参数支持范围，不能仅凭 400 认定渠道不可用。'
+        return '本次请求未完成；请按 HTTP 状态或网络/解析原因核查。未验证 Claude Code / Codex 的完整工作流程。'
+    if status == 'warn':
+        if kind.startswith('stream'):
+            evidence = item.get('stream') or {}
+            protocol_ok = item.get('protocol_status') == 'pass' or (evidence.get('completed') and evidence.get('invalid_events') == 0)
+            if protocol_ok and item.get('finish_reason') in ('length','max_tokens','MAX_TOKENS','max_output_tokens'):
+                return '该记录的流式结束和事件结构完整，回答因本次输出上限截断；历史失败标签不代表流式协议故障。'
+            if protocol_ok:return '已收到完整流式协议，但正文或用量信息未满足本项要求；请按缺失字段复核。'
+            return '本次流式结束或事件结构未通过完整校验，可能影响客户端接收；需结合实际协议配置复核。'
+        if kind in ('tool','tool2'):return '本次未取得要求的工具名和参数；属于单轮工具能力检查，不是完整 Agent 工具往返验收。'
+        if kind.startswith('identity_'):return '指纹样本不可用，影响身份初筛；不等于 API 无法调用。'
+        return '本测试的答案或格式未通过记录时的判定规则；不等于鉴权、连接或客户端调用失败。'
+    if status == 'pass' and kind in ('tool','tool2'):
+        return '已验证单轮工具名与参数；尚未执行工具、回传工具结果或验证 Claude Code / Codex 完整流程。'
+    return None
+
+
 def present(report):
     state = report.get('run_state','completed')
     samples = report.get('samples',[])
@@ -50,6 +75,7 @@ def present(report):
             item['status'] = ('running' if report.get('current_case')==spec['kind'] else 'pending') if state=='running' else 'skipped'
             item['note'] = '等待本项请求完成后显示响应及指标。' if state=='running' else '本次未执行，不计为检测失败。'
         item['status_label'] = STATUS.get(item.get('status'),'未验证')
+        item['impact'] = impact(item)
         item['anchor'] = f"case-{report['id']}-{index}"
         item['usage_rows'] = [(label,number((item.get('usage') or {}).get(key),0) if (item.get('usage') or {}).get('reported') else '未上报') for key,label in USAGE_LABELS.items()]
         item['request_json'] = json.dumps(item['request'],ensure_ascii=False,indent=2) if item.get('request') else None
@@ -58,7 +84,7 @@ def present(report):
         item['expected_tool_json'] = json.dumps(item['expected_tool'],ensure_ascii=False,indent=2) if item.get('expected_tool') else None
         cases.append(item)
     stats = report.get('stats',{})
-    counts = {s:sum(x.get('status')==s for x in samples) for s in ('pass','warn','error','sample')}
+    counts = {s:sum(x.get('status')==s for x in samples) for s in ('pass','warn','error','sample','limited')}
     issues = counts['warn']+counts['error']
     title = {'running':'正在检测','completed':'检测完成','failed':'检测中断','interrupted':'检测中断'}.get(state,'检测完成')
     summary = f"已完成 {len(samples)}/{len(plan)} 项 · {counts['pass']} 项通过 · {issues} 项失败"
@@ -81,6 +107,9 @@ def present(report):
     if identity and state!='running':
         result_line=identity['title']+'：'+identity['detail']
         issues=max(issues,int(identity['status']!='pass'))
+    if counts['limited']:
+        summary+=f" · {counts['limited']} 项预算受限"
+        if state!='running':result_line+=' 本次有回答达到设置的输出上限，预算受限不计为失败。'
     fingerprint=report.get('fingerprint')
     groups=[]
     comparisons=[]

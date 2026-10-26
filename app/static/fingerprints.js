@@ -3,6 +3,7 @@ import {selectedProtocol} from './models.js';
 let data=null;
 let lastModel='';
 let saving=false;
+let identityTouched=false;
 export function fingerprintButtonLabel(){return isFingerprint()&&$('fingerprintAction').value==='reference'?'采集可信指纹 ↗':'开始检测 ↗';}
 function isFingerprint(){return document.querySelector('input[name="mode"]:checked').value==='fingerprint';}
 function updateReferenceOptions(){
@@ -11,7 +12,10 @@ function updateReferenceOptions(){
   const normalize=id=>id.toLowerCase().split('/').pop().replace(/[^a-z0-9]/g,'');
   const covered=screen.supported_models.some(id=>normalize(id)===normalize($('model').value.trim()));
   const mode=document.querySelector('input[name="mode"]:checked').value;
-  $('identityNote').textContent=mode==='fingerprint'?'高级参考对照：使用自选基线，独立执行 99 次请求。':mode==='quick'?'快速档只检查基础功能；选择标准档可执行三次指纹初筛。':`含三次数字指纹初筛 · 公开库 ${screen.models} 个候选 · ${covered?'已覆盖所填型号':'未覆盖所填型号或别名，只提供候选线索'} · 不自动补测`;
+  const includeIdentity=mode!=='fingerprint'&&$('identityEnabled').checked;
+  const base=data.base_requests[mode]||0;
+  const extra=$('distill').checked&&['standard','deep'].includes(mode)?1:0;
+  $('identityNote').textContent=mode==='fingerprint'?'高级参考对照：使用自选基线，独立执行 '+data.requests+' 次请求。':`本次计划 ${base+(includeIdentity?screen.requests:0)+extra} 次请求 · ${includeIdentity?`含 ${screen.requests} 次指纹初筛 · ${covered?'已覆盖所填型号':'型号/别名未覆盖，仅提供候选线索'}`:'未勾选指纹检测，仅执行基础检查'}${extra?' · 含 1 次训练格式样例':''}`;
   const model=$('model').value.trim(),protocol=selectedProtocol();
   const references=data.references.filter(r=>r.enabled&&r.protocol===protocol);
   const previous=$('fingerprintReference').value;
@@ -22,6 +26,9 @@ function updateReferenceOptions(){
 }
 export function updateFingerprintUI(){
   const enabled=isFingerprint(),capture=enabled&&$('fingerprintAction').value==='reference';
+  const mode=document.querySelector('input[name="mode"]:checked').value;
+  if(!identityTouched)$('identityEnabled').checked=['standard','deep'].includes(mode);
+  $('identityEnabled').disabled=enabled;show($('identityControl'),!enabled);
   show($('fingerprintFields'),enabled);show($('fingerprintCapture'),capture);show($('fingerprintVerify'),enabled&&!capture);
   $('fingerprintName').required=capture;$('fingerprintTrusted').required=capture;$('fingerprintReference').required=enabled&&!capture;
   if(data)$('fingerprintPlanNote').textContent=`本档 ${data.requests} 次顺序请求，输出上限合计 ${data.max_output_tokens.toLocaleString()} Token；实际费用按上游计费。行为对照含 ${data.behavior_probes} 类探针、每类 ${data.behavior_repeats} 次。`;
@@ -37,7 +44,7 @@ export async function loadFingerprints(){
   updateFingerprintUI();
 }
 export function fingerprintPayload(){
-  if(!isFingerprint())return {};
+  if(!isFingerprint())return {identity_enabled:$('identityEnabled').checked};
   if(!data)throw new Error('指纹配置尚未加载，请重试连接。');
   const action=$('fingerprintAction').value;
   if(action==='reference'){
@@ -49,6 +56,8 @@ export function fingerprintPayload(){
 }
 export function setupFingerprints(){
   document.querySelectorAll('input[name="mode"]').forEach(el=>el.addEventListener('change',updateFingerprintUI));
+  $('identityEnabled').addEventListener('change',()=>{identityTouched=true;updateFingerprintUI();});
+  $('distill').addEventListener('change',updateReferenceOptions);
   $('fingerprintAction').addEventListener('change',updateFingerprintUI);
   window.addEventListener('model-selection-changed',updateReferenceOptions);
   $('newFingerprint').addEventListener('click',()=>window.dispatchEvent(new Event('fingerprint-capture')));
