@@ -1,0 +1,11 @@
+{% set identity=report.data.identity %}
+<section class="identity-result" aria-label="模型身份初筛">
+  <div><strong>模型身份初筛</strong><span class="status-pill {{ 'warn' if identity.status=='suspect' else identity.status }}">{{ identity.title }}</span></div>
+  {% if identity.candidates %}<p>最接近的候选：{% for candidate in identity.candidates %}<span class="identity-candidate">{{ loop.index }}. {{ candidate.display_name }}</span>{% endfor %}</p>{% endif %}
+  <details class="report-limits" data-detail-key="{{ report.data.id }}-identity-source" {% if not interactive %}open{% endif %}><summary>依据与参考来源</summary>
+    <p>{{ identity.detail }}</p>
+    {% if identity.round_candidates %}<p>逐次候选：{{ identity.round_candidates|join(' / ') }}</p>{% endif %}
+    <p>{{ identity.reference.source }} · {{ identity.reference.models }} 个候选 · {{ identity.reference.built_at[:10] }}<br>版本 {{ identity.reference.revision[:12] }} · <a href="{{ identity.reference.source_url }}" target="_blank" rel="noopener noreferrer">公开来源</a></p>
+    <p>{{ identity.limits }}</p>
+  </details>
+</section>

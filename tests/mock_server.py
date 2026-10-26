@@ -2,11 +2,14 @@
 import asyncio
 import json
 import time
+from pathlib import Path
 import uvicorn
 from app import engine
 from app import fingerprints
 from app.main import app
 
+IDENTITY_REPLIES=json.loads((Path(__file__).parent/'fixtures/identity-analyze.json').read_text())['cases'][0]['outputs']
+identity_calls=0
 calls = []
 fingerprint_counts = {}
 FINGERPRINT_PROMPTS={p['prompt']:p for p in fingerprints.PLAN}
@@ -33,6 +36,7 @@ def answer(prompt):
 
 
 async def request(method,url,headers,payload=None,**kwargs):
+    global identity_calls
     calls.append(url)
     if method=='GET':return Response(),json.dumps({'data':[{'id':'channel-alias'}]}).encode()
     is_anthropic='x-api-key' in headers
@@ -40,6 +44,7 @@ async def request(method,url,headers,payload=None,**kwargs):
     is_responses='input' in payload
     prompt=payload.get('input') or (payload['contents'][0]['parts'][0]['text'] if is_gemini else payload['messages'][0]['content'])
     spec=FINGERPRINT_PROMPTS.get(prompt)
+    is_identity=any(payload.get(k)==2048 for k in ('max_tokens','max_completion_tokens','max_output_tokens')) or payload.get('generationConfig',{}).get('maxOutputTokens')==2048
     await asyncio.sleep(.025 if spec else .8)
     text=answer(prompt);input_tokens=20;tool=bool(payload.get('tools'));reasoning='盒子' in prompt
     if spec:
@@ -51,6 +56,8 @@ async def request(method,url,headers,payload=None,**kwargs):
             text='OK'
         elif spec['group']=='behavior':text=spec['probe']['answers'][-1 if shifted else 0]
         else:text=json.dumps(None if shifted else spec['probe']['expected'],ensure_ascii=False)
+    if is_identity:
+        text=IDENTITY_REPLIES[identity_calls%3]['text'];identity_calls+=1
     arguments={'centimeters':25 if '25 厘米' in prompt else 12}
     if is_anthropic:
         content=[{'type':'tool_use','name':'convert_length','input':arguments}] if tool else [{'type':'text','text':text}]

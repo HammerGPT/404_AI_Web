@@ -81,7 +81,7 @@ window.addEventListener('fingerprint-capture',()=>{
   activeId=null;sessionStorage.removeItem('activeRunId');setPage('test');
   $('baseUrl').value='';$('apiKey').value='';$('fingerprintTrusted').checked=false;
   const mode=document.querySelector('input[name="mode"][value="fingerprint"]');mode.checked=true;mode.dispatchEvent(new Event('change'));
-  $('fingerprintAction').value='reference';updateFingerprintUI();$('baseUrl').focus();window.scrollTo({top:0});
+  $('fingerprintAction').value='reference';show($('advancedFields'));$('advancedToggle').setAttribute('aria-expanded','true');$('advancedArrow').textContent='−';updateFingerprintUI();$('baseUrl').focus();window.scrollTo({top:0});
 });
 $('loginForm').addEventListener('submit',async event=>{
   event.preventDefault();show($('loginError'),false);$('loginBtn').disabled=true;
@@ -140,7 +140,7 @@ $('testForm').addEventListener('submit',async event=>{
 });
 const stateLabels={running:'检测中',interrupted:'已中断',failed:'已中断'};
 const resultLabels={pass:'已完成',attention:'需核查'};
-const modeLabels={quick:'快速',standard:'标准',deep:'深度',fingerprint:'指纹验货'};
+const modeLabels={quick:'快速',standard:'标准',deep:'深度',fingerprint:'高级参考对照'};
 async function loadHistory(){
   const target=$('historyRows');target.innerHTML='<div class="empty-state">正在加载…</div>';
   try{

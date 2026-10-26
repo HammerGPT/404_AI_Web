@@ -7,6 +7,11 @@ export function fingerprintButtonLabel(){return isFingerprint()&&$('fingerprintA
 function isFingerprint(){return document.querySelector('input[name="mode"]:checked').value==='fingerprint';}
 function updateReferenceOptions(){
   if(!data)return;
+  const screen=data.screening;
+  const normalize=id=>id.toLowerCase().split('/').pop().replace(/[^a-z0-9]/g,'');
+  const covered=screen.supported_models.some(id=>normalize(id)===normalize($('model').value.trim()));
+  const mode=document.querySelector('input[name="mode"]:checked').value;
+  $('identityNote').textContent=mode==='fingerprint'?'高级参考对照：使用自选基线，独立执行 99 次请求。':mode==='quick'?'快速档只检查基础功能；选择标准档可执行三次指纹初筛。':`含三次数字指纹初筛 · 公开库 ${screen.models} 个候选 · ${covered?'已覆盖所填型号':'未覆盖所填型号或别名，只提供候选线索'} · 不自动补测`;
   const model=$('model').value.trim(),protocol=selectedProtocol();
   const references=data.references.filter(r=>r.enabled&&r.protocol===protocol);
   const previous=$('fingerprintReference').value;

@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from . import store
 from .engine import make_report, run_suite, resolve_protocol, redact
-from . import fingerprints
+from . import fingerprints, identity
 from urllib.parse import urlsplit
 
 
@@ -56,6 +56,8 @@ class RunManager:
                         cfg['token_field']=reference['conditions']['token_field']
                     fingerprints.validate_reference(reference,cfg)
                     cfg['_fingerprint_reference']=reference
+            if cfg['mode'] in ('standard','deep'):
+                cfg['_identity_challenges']=identity.generate_challenges(3)
             report_id = uuid.uuid4().hex[:14]
             created_at = datetime.now(timezone.utc).isoformat()
             report = make_report(cfg,[],report_id,created_at)

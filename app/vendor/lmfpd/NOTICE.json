@@ -1,0 +1,32 @@
+{
+  "project": "Ikaleio/lm-detector",
+  "commit": "1e58ed83c1cde17f88cba89560ad4d083042ae92",
+  "url": "https://github.com/Ikaleio/lm-detector/tree/1e58ed83c1cde17f88cba89560ad4d083042ae92",
+  "license": "MIT",
+  "source_sha256": {
+    "sdk/python/src/lmfpd/_analysis.py": "814b393350a004cc03300b73019dedadd37ad516a46ae7edacd7c02b4559302d",
+    "sdk/python/src/lmfpd/_ranker.py": "31066246f4b123ceff0d9db7a6f7ec193eea286407b3313da6b2fa3ce99a9486",
+    "sdk/python/src/lmfpd/_features.py": "d478f31e9301872a869df7a85c55d1eb0d7349bae4c28f30d110b1f3ebd9d297",
+    "sdk/python/src/lmfpd/_codec.py": "2c0479e89dd7ea125865c41983b6ca5df3be904705ff1159e2992bcfa913df0f",
+    "sdk/python/src/lmfpd/_types.py": "4a594f6b428d7c89a57313d9e1dbff9650f0e89b2e8439b7ef2586747037b6ea",
+    "sdk/python/src/lmfpd/_challenge.py": "858d4bc63ad1295c445628766992326d7084e5f933d2007d41915fcd51494380",
+    "sdk/python/src/lmfpd/templates.json": "b3af91a3f889a534638308221cc3db3cada36f68395fdc75ed71a9571ac2c5df",
+    "LICENSE": "238afb57e498990742f84b9ce6167b4e256ac06104a9938ce953bc41c14bea51",
+    "data/shared_detector.bin": "6a102f86c3f8a9aeeb052edfbdf5edf6f9e891ac6693129a4e007139c74861f6",
+    "data/unified_bank.json": "167edd84bd310bf30775245672944e3201e5ae6b77c5aab40a516494f7cd39fd"
+  },
+  "note": "Offline scoring modules unmodified. bank.json is model metadata extracted from unified_bank.json; no networking, sampling, auto-updates or private keys included. _challenge.py resource package changed to __package__ for vendoring.",
+  "bundled_sha256": {
+    "_codec.py": "2c0479e89dd7ea125865c41983b6ca5df3be904705ff1159e2992bcfa913df0f",
+    "__init__.py": "7366bd16115222b0bdba6510d615bf2b6abd5b9a093e15a0f36749d7eff4323c",
+    "_challenge.py": "ba12d04e0e25f6f21100d6c33e7cad6e48bc509a89a7c3106493c226f4a55cee",
+    "LICENSE": "238afb57e498990742f84b9ce6167b4e256ac06104a9938ce953bc41c14bea51",
+    "shared_detector.bin": "6a102f86c3f8a9aeeb052edfbdf5edf6f9e891ac6693129a4e007139c74861f6",
+    "templates.json": "b3af91a3f889a534638308221cc3db3cada36f68395fdc75ed71a9571ac2c5df",
+    "_analysis.py": "814b393350a004cc03300b73019dedadd37ad516a46ae7edacd7c02b4559302d",
+    "_types.py": "4a594f6b428d7c89a57313d9e1dbff9650f0e89b2e8439b7ef2586747037b6ea",
+    "_ranker.py": "31066246f4b123ceff0d9db7a6f7ec193eea286407b3313da6b2fa3ce99a9486",
+    "bank.json": "4bf1092b6addd3faa91f7a48c20eb0fd780e74c8e67ee7012307491a1c8f623f",
+    "_features.py": "d478f31e9301872a869df7a85c55d1eb0d7349bae4c28f30d110b1f3ebd9d297"
+  }
+}

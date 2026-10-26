@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
-from . import store, auth, fingerprints
+from . import store, auth, fingerprints, identity
 from .catalog import PROTOCOLS, BRANDS, REASONING_LABELS, metadata, validate_reasoning_profile
 from .reports import render_report, pdf_renderer
 from .runs import manager, BusyError
@@ -360,7 +360,7 @@ async def model_catalog(session=Depends(get_session)):
 async def fingerprint_catalog(session=Depends(get_session)):
     fields=('id','name','model','protocol','source_host','source_kind','created_at','report_id','enabled')
     references=[{k:r[k] for k in fields} for r in store.list_fingerprint_baselines()]
-    return {**fingerprints.catalog(),'references':references}
+    return {**fingerprints.catalog(),'references':references,'screening':identity.metadata()}
 
 
 @app.get('/api/fingerprints/{reference_id}')

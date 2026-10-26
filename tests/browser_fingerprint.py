@@ -20,6 +20,7 @@ async def main():
         await page.locator('#loginBtn').click()
         await expect(page.locator('#runBtn')).to_be_enabled()
         await page.locator('[data-select-model="claude-opus-5-5"]').click()
+        await page.locator('#advancedToggle').click()
         await page.locator('.mode-option:has(input[value="fingerprint"])').click()
         await expect(page.locator('#reasoning')).to_be_disabled()
         await expect(page.locator('#fingerprintPlanNote')).to_contain_text('99 次')

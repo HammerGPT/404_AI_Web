@@ -14,7 +14,7 @@ ROOT = Path(__file__).parent
 TEMPLATES = Environment(loader=FileSystemLoader(ROOT/'templates'),autoescape=select_autoescape(['html']))
 STATUS = {'pass':'通过','warn':'失败','error':'失败','sample':'旧版未判定','unknown':'未验证',
           'pending':'等待','running':'检测中','skipped':'未执行','interrupted':'已中断','attention':'需核查'}
-MODES = {'quick':'快速','standard':'标准','deep':'深度','fingerprint':'指纹验货'}
+MODES = {'quick':'快速','standard':'标准','deep':'深度','fingerprint':'高级参考对照'}
 USAGE_LABELS = {'input_tokens':'输入 Token','output_tokens':'输出 Token','cache_read_tokens':'缓存读取',
                 'cache_write_tokens':'缓存写入','reasoning_tokens':'推理 Token'}
 
@@ -73,6 +73,14 @@ def present(report):
         else:
             passed = [s['title'] for s in samples if s.get('status')=='pass']
             result_line = ('已验证：'+'、'.join(passed[:4])+('等项目。' if len(passed)>4 else '。')) if passed else '尚无通过的检测项，详见逐项记录。'
+    identity=report.get('identity')
+    if identity:
+        basic=[s for s in samples if not s['kind'].startswith('identity_')]
+        usable=sum(s['kind'].startswith('identity_') and s['status']=='pass' for s in samples)
+        summary=f"已完成 {len(samples)}/{len(plan)} 次请求 · 基础检查 {sum(s['status']=='pass' for s in basic)} 项通过 / {sum(s['status'] in ('warn','error') for s in basic)} 项失败 · 指纹样本 {usable}/3 可用"
+    if identity and state!='running':
+        result_line=identity['title']+'：'+identity['detail']
+        issues=max(issues,int(identity['status']!='pass'))
     fingerprint=report.get('fingerprint')
     groups=[]
     comparisons=[]

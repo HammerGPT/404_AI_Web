@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 import httpx
 from .adapters import TOOL, TEXT_LIMIT, StreamResult, build_payload, normalize_usage, parse_result
 from .catalog import infer_protocol
-from . import fingerprints
+from . import fingerprints, identity
 from .security import api_path, pinned_request, pinned_stream, TargetError
 
 CASES = [
@@ -34,10 +34,10 @@ CASES = [
 DISTILL = ('structured_sample', '授权数据生成样例', '生成一条关于基础数学的原创训练问答，严格输出 JSON，字段为 instruction、input、output、explanation，内容简短。', 200)
 
 
-def cases_for(mode: str, distill: bool = False):
+def cases_for(mode: str, distill: bool = False, challenges=None):
     if mode=='fingerprint':return fingerprints.cases()
     n = {'quick': 4, 'standard': 8, 'deep': 16}[mode]
-    cases = CASES[:n]
+    cases = CASES[:n] + (identity.cases(challenges) if mode in ('standard','deep') else [])
     return cases + ([DISTILL] if distill and mode != 'quick' else [])
 
 
@@ -65,6 +65,7 @@ CASE_TIMEOUT_SECONDS = 90
 
 def case_spec(case):
     kind, title, prompt, _ = case
+    if kind.startswith('identity_'):return identity.specification(case)
     if kind in fingerprints.BY_KIND:return fingerprints.specification(kind)
     family = kind.rstrip('0123456789')
     return {'kind': kind, 'title': title, 'prompt': prompt,
@@ -156,7 +157,7 @@ def request_headers(protocol: str, key: str, custom: dict | None = None):
 
 async def run_one(cfg: dict, protocol: str, case: tuple) -> dict:
     kind, title, prompt, max_output = case
-    if cfg['mode'] == 'deep':
+    if cfg['mode'] == 'deep' and not kind.startswith('identity_'):
         max_output = min(320,max_output*2)
     secrets = [cfg['key'], *cfg.get('custom_headers',{}).values()]
     clean = lambda value: redact(value, secrets)
@@ -200,7 +201,7 @@ async def run_one(cfg: dict, protocol: str, case: tuple) -> dict:
                 item['note'] = f'HTTP {response.status_code}（请求失败，请检查接口配置）'
             else:
                 item.update(parse_result(clean(json.loads(raw)),protocol,kind))
-                item['status'],item['note'] = fingerprints.grade(kind,item) if kind in fingerprints.BY_KIND else check_assertion(kind,item['text'],item['tool_calls'])
+                item['status'],item['note'] = identity.grade(item) if kind.startswith('identity_') else fingerprints.grade(kind,item) if kind in fingerprints.BY_KIND else check_assertion(kind,item['text'],item['tool_calls'])
                 for call in item['tool_calls']:
                     call['arguments'] = redact(call['arguments'],secrets,keys=True)
         if item.get('finish_reason') in ('length','max_tokens','MAX_TOKENS','incomplete') and item['status'] != 'error' and not kind.startswith('fp_token_'):
@@ -253,7 +254,7 @@ def build_sections(samples: list, protocol: str, model: str, distill_requested: 
 
 def make_report(cfg, samples, report_id, created_at, state='running', current_case=None, elapsed_ms=0, stop_reason=None):
     protocol = resolve_protocol(cfg['protocol'],cfg['base_url'],cfg['model'])
-    plan = [case_spec(c) for c in cases_for(cfg['mode'],cfg.get('distill',False))]
+    plan = [case_spec(c) for c in cases_for(cfg['mode'],cfg.get('distill',False),cfg.get('_identity_challenges'))]
     coverage = {k:sum(x.get('usage',{}).get(k) is not None for x in samples) for k in USAGE_FIELDS}
     totals = {k:sum(x['usage'][k] for x in samples if x.get('usage',{}).get(k) is not None) if coverage[k] else None for k in USAGE_FIELDS}
     totals['coverage'] = coverage
@@ -291,6 +292,10 @@ def make_report(cfg, samples, report_id, created_at, state='running', current_ca
     if cfg['mode']=='fingerprint':
         report['fingerprint']=fingerprints.analyze(cfg,samples,state)
         if report['fingerprint']['status'] in ('fail','unknown') and state!='running':report['status']='attention'
+    if cfg['mode'] in ('standard','deep'):
+        report['identity']=identity.analyze(cfg,samples,state)
+        if state!='running' and report['identity']['status']!='pass':report['status']='attention'
+        report['sections'][0]={'name':'模型身份初筛','status':report['identity']['status'],'detail':report['identity']['detail']}
     return redact(report,[cfg['key'], *cfg.get('custom_headers',{}).values()])
 
 
@@ -298,8 +303,10 @@ async def run_suite(cfg: dict, update=None, report_id=None, created_at=None) -> 
     report_id = report_id or uuid.uuid4().hex[:14]
     created_at = created_at or datetime.now(timezone.utc).isoformat()
     protocol = resolve_protocol(cfg['protocol'],cfg['base_url'],cfg['model'])
+    if cfg['mode'] in ('standard','deep') and '_identity_challenges' not in cfg:
+        cfg['_identity_challenges']=identity.generate_challenges(3)
     start, samples, stop_reason = time.perf_counter(), [], None
-    for case in cases_for(cfg['mode'],cfg.get('distill',False)):
+    for case in cases_for(cfg['mode'],cfg.get('distill',False),cfg.get('_identity_challenges')):
         if update:
             await update(make_report(cfg,samples,report_id,created_at,current_case=case[0],elapsed_ms=(time.perf_counter()-start)*1000))
         # Bound whole-case duration as well as individual network reads.
@@ -315,6 +322,10 @@ async def run_suite(cfg: dict, update=None, report_id=None, created_at=None) -> 
         if len(samples)==1 and result.get('http_status') in (401,403):
             stop_reason = '首项鉴权失败，剩余项目未执行。'
             break
+        if result.get('http_status') in (401,403,429):
+            stop_reason='鉴权或限流错误，已停止剩余请求，未自动重试。';break
+        if result['kind'].startswith('identity_') and result['status']!='pass':
+            stop_reason='指纹样本未能取得有效完整回答，已停止剩余请求，不自动追加。';break
         if cfg['mode']=='fingerprint':
             if result.get('http_status') in (401,403,404,429):
                 stop_reason='鉴权、接口或限流错误，已停止剩余指纹请求，未自动重试。';break

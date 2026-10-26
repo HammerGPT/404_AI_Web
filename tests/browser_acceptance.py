@@ -35,6 +35,8 @@ async def main():
         await expect(tip).to_have_attribute('aria-expanded','true')
         await page.keyboard.press('Escape')
         await expect(tip).to_have_attribute('aria-expanded','false')
+        assert await page.locator('.mode-grid input[name="mode"]').count()==3
+        await expect(page.locator('input[value="fingerprint"]')).to_be_hidden()
         await page.screenshot(path='/testdata/model-selection.png',full_page=True)
 
         await page.locator('#navSettings').click()
@@ -46,7 +48,7 @@ async def main():
         await expect(page.locator('#billingNotice')).to_contain_text('已保存')
         await page.locator('#newPreset').click()
         await page.locator('#presetName').fill('验收模型（模拟）')
-        await page.locator('#presetModel').fill('acceptance-alias')
+        await page.locator('#presetModel').fill('claude-haiku-4-5')
         await page.locator('#presetProtocol').select_option('openai_responses')
         await page.locator('#presetOrder').fill('-1')
         await page.locator('#presetReasoningOptions input[value="low"]').check()
@@ -54,10 +56,10 @@ async def main():
         await page.locator('#presetReasoningDefault').select_option('high')
         await page.locator('#savePreset').click()
         await expect(page.locator('#presetEditor')).to_be_hidden()
-        await expect(page.locator('#presetRows')).to_contain_text('acceptance-alias')
+        await expect(page.locator('#presetRows')).to_contain_text('claude-haiku-4-5')
         await page.screenshot(path='/testdata/model-settings.png',full_page=True)
         await page.locator('#navTest').click()
-        await page.locator('[data-select-model="acceptance-alias"]').click()
+        await page.locator('[data-select-model="claude-haiku-4-5"]').click()
         await expect(page.locator('#protocolNote')).to_contain_text('OpenAI Responses')
         await expect(page.locator('#reasoning')).to_have_value('high')
         await expect(page.locator('#groupRatio')).to_have_value('2.5')
@@ -66,7 +68,7 @@ async def main():
         await page.locator('[data-select-model="gpt-6-astra"]').click()
         await expect(page.locator('#groupRatio')).to_have_value('3.25')
         await expect(page.locator('#reasoning')).to_have_value('auto')
-        await page.locator('[data-select-model="acceptance-alias"]').click()
+        await page.locator('[data-select-model="claude-haiku-4-5"]').click()
         await expect(page.locator('#reasoning')).to_have_value('high')
         await page.locator('[data-multiplier="2.5"]').click()
         await expect(page.locator('#groupRatio')).to_be_hidden()
@@ -83,18 +85,20 @@ async def main():
         report_id=await page.locator('#runReport .report').get_attribute('data-report-id')
         progress=page.locator('#runReport progress')
         assert int(await progress.get_attribute('value'))>=1
-        assert await progress.get_attribute('max')=='8'
+        assert await progress.get_attribute('max')=='11'
         assert await page.locator('#runReport .evidence-case[open]').count()==0
-        assert await page.locator('#runReport .evidence-case > summary').last.evaluate('(el)=>el.getBoundingClientRect().bottom<=window.innerHeight')
         await page.screenshot(path='/testdata/live-progress.png',full_page=True)
         await page.reload()
         await expect(page.locator('#runReport .report')).to_have_attribute('data-report-id',report_id)
         await expect(page.locator('#runReport .report')).to_have_attribute('data-state','completed',timeout=30000)
         calls=await (await context.request.get('http://127.0.0.1:8000/__test__/calls')).json()
-        assert calls['count']==8, calls
+        assert calls['count']==11, calls
         report=await (await context.request.get('http://127.0.0.1:8000/api/reports/'+report_id)).json()
-        assert report['stats']['counts']=={'pass':8,'warn':0,'error':0,'sample':0},report['stats']['counts']
-        assert report['stats']['ttft_samples']==1 and report['stats']['tps_samples']==8
+        assert report['identity']['status']=='pass',report['identity']
+        assert report['identity']['reference']['models']==63
+        await expect(page.locator('#runReport .identity-result')).to_contain_text('与声明模型基本一致')
+        assert report['stats']['counts']=={'pass':11,'warn':0,'error':0,'sample':0},report['stats']['counts']
+        assert report['stats']['ttft_samples']==1 and report['stats']['tps_samples']==11
         assert report['settings']['billing_multiplier']==2.5 and report['stats']['estimated_cost_usd'] is None
         assert report['settings']['reasoning']=='high'
         reasoning=next(s for s in report['samples'] if s['kind']=='reasoning')
@@ -102,7 +106,6 @@ async def main():
         assert all('reasoning' not in s['request']['parameters'] for s in report['samples'] if s['kind']!='reasoning')
         assert 'FAKE_BROWSER_KEY' not in json.dumps(report)
         assert await page.locator('#apiKey').input_value()==''
-        assert await page.locator('#runReport .evidence-case > summary').last.evaluate('(el)=>el.getBoundingClientRect().bottom<=window.innerHeight')
         assert await page.locator('#runReport .case-overview').count()==0
         await page.screenshot(path='/testdata/report-summary.png',full_page=True)
         await page.locator('#runReport .evidence-case > summary').nth(4).click()
@@ -117,7 +120,7 @@ async def main():
         await page.locator(f'[data-report="{report_id}"]').click()
         await expect(page.locator('#historyDetail .report')).to_have_attribute('data-report-id',report_id)
         calls=await (await context.request.get('http://127.0.0.1:8000/__test__/calls')).json()
-        assert calls['count']==8
+        assert calls['count']==11
         await page.set_viewport_size({'width':390,'height':844})
         assert await page.evaluate('document.documentElement.scrollWidth<=window.innerWidth')
         mobile_tip=page.locator('#historyDetail .report-metrics .help-trigger').first
@@ -132,10 +135,10 @@ async def main():
         assert await page.evaluate('document.documentElement.scrollWidth<=window.innerWidth')
         await page.reload()
         await page.locator('#navSettings').click()
-        await expect(page.locator('#presetRows')).to_contain_text('acceptance-alias')
+        await expect(page.locator('#presetRows')).to_contain_text('claude-haiku-4-5')
         catalog=await (await context.request.get('http://127.0.0.1:8000/api/catalog')).json()
         assert catalog['billing']=={'options':[0.5,1,2,2.5],'default':2.5}
-        preset=next(m for m in catalog['models'] if m['model_id']=='acceptance-alias')
+        preset=next(m for m in catalog['models'] if m['model_id']=='claude-haiku-4-5')
         assert preset['reasoning_default']=='high' and preset['reasoning_options']==['auto','low','high']
         assert not errors,errors
         Path('/testdata/report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))

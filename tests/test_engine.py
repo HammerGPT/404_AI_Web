@@ -9,8 +9,8 @@ from app.security import validate_target,api_path,TargetError
 
 def test_suite_sizes():
     assert len(cases_for('quick'))==4
-    assert len(cases_for('standard'))==8
-    assert len(cases_for('deep',True))==17
+    assert len(cases_for('standard'))==11
+    assert len(cases_for('deep',True))==20
 
 
 def test_api_paths():

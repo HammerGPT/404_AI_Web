@@ -15,10 +15,11 @@
   </div>
   {% if report.legacy %}<p class="report-notice">旧版报告：缺失的测试题、规则与指标显示“未记录”，无法补回。</p>{% endif %}
   {% if report.data.stats.counts and report.data.stats.counts.sample %}<p class="report-notice">该历史报告包含旧版未判定项，不计为通过或失败，也不会按新规则补算。</p>{% endif %}
-  {% if not report.fingerprint %}<p class="report-notice">本报告为基础功能检查，未执行独立的指纹验货，不能据此认定没有掺水。</p>{% endif %}
+  {% if not report.fingerprint and not report.data.identity %}<p class="report-notice">本报告为基础功能检查，未执行独立的指纹验货，不能据此认定没有掺水。</p>{% endif %}
   <div class="report-metrics">{% for metric in report.metrics %}<div><span>{{ metric.label }} {% if interactive %}{{ help(metric.hint) }}{% endif %}</span><strong>{{ metric.value if metric.value not in ('未记录','未采集','未核算') else '—' }}</strong>{% if not interactive %}<small>{{ metric.hint }}</small>{% endif %}</div>{% endfor %}</div>
   <div class="usage-strip">{% for item in report.usage %}<span title="{{ item.coverage }} · {{ item.value }}">{{ item.label }} <strong>{{ item.value if item.value != '未上报' else '—' }}</strong></span>{% endfor %}</div>
   {% if report.data.settings %}<div class="run-settings-note">计费倍率 {{ report.data.settings.billing_multiplier }}× · 思考专项：{{ report.reasoning_label }}{% if not report.data.settings.reasoning_scheduled %}（本档未执行）{% endif %}</div>{% endif %}
+  {% if report.data.identity %}{% include 'identity.html' %}{% endif %}
   {% if report.fingerprint %}
     {% include 'fingerprint.html' %}
   {% else %}
